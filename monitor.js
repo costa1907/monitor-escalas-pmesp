@@ -20,8 +20,10 @@
 //      truque de injeção via API interna do GeneXus (gx.setVar + onchange) já
 //      testado e usado há 290 versões no robô Tampermonkey — os campos de data
 //      são um widget de calendário, não aceitam preenchimento direto de texto.
-//   6. Clica em "Procurar" e lê a grade (#Grid1ContainerTbl), paginando pelo
-//      botão #NEXT até acabar. Repete pra cada uma das 17 áreas.
+//   6. Clica em "Procurar" e lê a grade (#Grid1ContainerTbl), paginando via
+//      clique GX no botão #NEXT (não é clique visual simples) até acabar —
+//      com verificação de "a página realmente mudou?" pra nunca ficar preso
+//      relendo a mesma página. Repete pra cada uma das 17 áreas.
 // ─────────────────────────────────────────────────────────────────────────
 
 const { chromium } = require("playwright");
@@ -80,7 +82,6 @@ function carregarVistos() {
 }
 function salvarVistos(set) {
     var lista = Array.from(set);
-    // evita o arquivo crescer pra sempre — mantém só os últimos 2000 registros
     if (lista.length > 2000) lista = lista.slice(lista.length - 2000);
     fs.writeFileSync(SEEN_PATH, JSON.stringify(lista, null, 0));
 }
@@ -100,8 +101,6 @@ async function enviarTelegram(texto) {
     if (!data.ok) console.error("❌ Falha ao enviar Telegram:", JSON.stringify(data));
 }
 
-// ── Injeta um valor num campo GeneXus via API interna (mesmo truque do robô) ──
-// Precisa de um objeto "Frame" de verdade (não FrameLocator) porque usa .evaluate().
 async function preencherCampoGX(frame, nomeCampo, valor) {
     return frame.evaluate(({ nomeCampo, valor }) => {
         if (typeof gx === "undefined" || !gx.O) return false;
@@ -124,9 +123,6 @@ async function preencherCampoGX(frame, nomeCampo, valor) {
     }, { nomeCampo, valor });
 }
 
-// ── Clica na aba "Procedimentos" (barra azul vertical) que revela o formulário de
-// login — procura em todos os frames da página, já que não sabemos de antemão em
-// qual frame exatamente ela vive.
 async function clicarAbaProcedimentosSeExistir(page) {
     for (const frame of page.frames()) {
         try {
@@ -142,20 +138,14 @@ async function clicarAbaProcedimentosSeExistir(page) {
     return false;
 }
 
-// ── Login + navegação até a tela de pesquisa de escalas. Retorna a página (popup) ──
-// "onErro" é chamado com QUALQUER página aberta no momento da falha, pra sempre
-// conseguirmos tirar uma screenshot de debug, mesmo se travar antes da popup abrir.
 async function fazerLoginEAbrirDelegada(browserContext, onErro) {
     var page = await browserContext.newPage();
     var page1 = null;
     try {
         await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
-        // dá tempo extra pra página terminar de montar os frames antes de mexer neles
         await page.waitForLoadState("networkidle").catch(() => {});
         await page.waitForTimeout(3000);
 
-        // a tela inicial mostra o portal (avisos, calendário) — o formulário de login só
-        // aparece depois de clicar na aba "Procedimentos" da barra lateral esquerda
         await clicarAbaProcedimentosSeExistir(page);
         await page.waitForTimeout(2000);
         await page.waitForLoadState("networkidle").catch(() => {});
@@ -172,9 +162,6 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
         await page1.waitForLoadState("domcontentloaded");
         await page1.waitForTimeout(2000);
 
-        // Menu em cascata: passa o mouse em "SIRH" → abre submenu "Escala" → passa o
-        // mouse nele → abre o submenu final com "Inscrever PM na Escala Ativ Delegada".
-        // Precisa do hover em cada nível (não é link direto, é JS de onmouseover).
         await page1.locator("td.ThemeClassicMainFolderText", { hasText: "SIRH" }).hover({ timeout: 15000 });
         await page1.waitForTimeout(800);
         await page1.getByText("Escala", { exact: true }).first().hover({ timeout: 10000 });
@@ -183,8 +170,6 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
         await page1.waitForTimeout(1500);
         await page1.waitForLoadState("networkidle").catch(() => {});
 
-        // Tela de "declaração de apto" — só costuma aparecer às vezes / na primeira vez.
-        // Tenta com timeout curto; se não achar, segue sem erro.
         try {
             var embFrameApto = page1.frameLocator('iframe[name="Embpage"]');
             await embFrameApto.locator("#vAPTO").check({ timeout: 3000 });
@@ -200,6 +185,46 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
         if (typeof onErro === "function") await onErro(page1 || page, "login");
         throw err;
     }
+}
+
+// ── Lê as linhas da grade atual (dentro do frame Embpage) ──────────────────
+function _lerLinhasGrade() {
+    var tabela = document.getElementById("Grid1ContainerTbl") ||
+        document.querySelector('[id^="Grid1ContainerTbl"]') || document.querySelector(".GridCardTable");
+    if (!tabela) return [];
+    var linhas = tabela.querySelectorAll('tr[id^="Grid1ContainerRow"], tr.GridCardRow, tr.GridRow');
+    var out = [];
+    linhas.forEach(function (linha) {
+        var colunas = linha.querySelectorAll("td");
+        if (colunas.length < 7) return;
+        out.push({
+            escalaId: colunas[2].textContent.trim(),
+            data: colunas[4].textContent.trim(),
+            horaIni: colunas[5].textContent.trim(),
+            horaFim: colunas[6].textContent.trim()
+        });
+    });
+    return out;
+}
+
+// ── Clica no botão "Próxima página" via API interna do GeneXus (mesmo truque
+// do robô Tampermonkey — clique "visual" simples não dispara o evento certo
+// e a grade não muda de página de verdade, mesmo o botão continuando visível).
+async function clicarProximaPaginaGX(frame) {
+    return frame.evaluate(() => {
+        var btn = document.getElementById("NEXT");
+        if (!btn) return false;
+        try {
+            if (typeof btn.focus === "function") btn.focus();
+            var ctx = (typeof gx !== "undefined" && gx.O) ? (gx.O.CmpContext || "") : "";
+            if (typeof gx !== "undefined" && gx.evt && typeof gx.evt.execEvt === "function") {
+                try { gx.evt.execEvt(ctx + "ENEXT.CLICK.", btn); return true; } catch (e) {}
+            }
+            if (typeof btn.onclick === "function") { btn.onclick(); return true; }
+            btn.click();
+            return true;
+        } catch (e) { return false; }
+    });
 }
 
 // ── Pesquisa uma AISP e lê todas as páginas da grade de escalas ────────────
@@ -221,28 +246,20 @@ async function pesquisarEscalas(page1, aisp) {
     await page1.waitForLoadState("networkidle").catch(() => {});
 
     var resultados = [];
+    var fingerprintAnterior = null;
     var seguraPaginando = true;
     var paginasLidas = 0;
-    while (seguraPaginando && paginasLidas < 50) {
+    var MAX_PAGINAS = 30; // teto de segurança — uma AISP real não deveria chegar nem perto disso
+    while (seguraPaginando && paginasLidas < MAX_PAGINAS) {
         paginasLidas++;
-        var linhasDaPagina = await embFrameHandle.evaluate(() => {
-            var tabela = document.getElementById("Grid1ContainerTbl") ||
-                document.querySelector('[id^="Grid1ContainerTbl"]') || document.querySelector(".GridCardTable");
-            if (!tabela) return [];
-            var linhas = tabela.querySelectorAll('tr[id^="Grid1ContainerRow"], tr.GridCardRow, tr.GridRow');
-            var out = [];
-            linhas.forEach(function (linha) {
-                var colunas = linha.querySelectorAll("td");
-                if (colunas.length < 7) return;
-                out.push({
-                    escalaId: colunas[2].textContent.trim(),
-                    data: colunas[4].textContent.trim(),
-                    horaIni: colunas[5].textContent.trim(),
-                    horaFim: colunas[6].textContent.trim()
-                });
-            });
-            return out;
-        });
+        var linhasDaPagina = await embFrameHandle.evaluate(_lerLinhasGrade);
+        var fingerprintAtual = JSON.stringify(linhasDaPagina);
+
+        if (fingerprintAtual === fingerprintAnterior) {
+            console.log("⚠️ Página não mudou após clicar em Próxima — encerrando paginação da AISP " + aisp + ".");
+            break;
+        }
+        fingerprintAnterior = fingerprintAtual;
         resultados = resultados.concat(linhasDaPagina);
 
         var temProxima = await embFrameHandle.evaluate(() => {
@@ -250,7 +267,7 @@ async function pesquisarEscalas(page1, aisp) {
             return !!(btn && btn.style.display !== "none" && btn.style.visibility !== "hidden");
         });
         if (!temProxima) { seguraPaginando = false; break; }
-        await embFrame.locator("#NEXT").click().catch(() => { seguraPaginando = false; });
+        await clicarProximaPaginaGX(embFrameHandle);
         await page1.waitForTimeout(1200);
         await page1.waitForLoadState("networkidle").catch(() => {});
     }
@@ -275,7 +292,7 @@ async function pesquisarEscalas(page1, aisp) {
         var context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
         page1 = await fazerLoginEAbrirDelegada(context, tirarScreenshotErro);
 
-        var resultadoPorArea = []; // { aisp, nome, total } — TODAS as áreas verificadas, mesmo com 0
+        var resultadoPorArea = [];
         for (const aisp of AISPS_MONITORADAS) {
             var linhas = await pesquisarEscalas(page1, aisp);
             console.log("AISP " + aisp + " (" + _nomeDaAisp(aisp) + "): " + linhas.length + " linha(s) na grade.");
@@ -290,7 +307,6 @@ async function pesquisarEscalas(page1, aisp) {
         }
     } catch (err) {
         console.error("❌ Erro durante a checagem:", err);
-        // se a screenshot já não foi tirada dentro do login, tenta tirar de page1 aqui
         if (page1 && !fs.existsSync(path.join(__dirname, "erro.png"))) await tirarScreenshotErro(page1);
         if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
             await enviarTelegram("⚠️ O monitor de escalas deu erro: " + String(err).slice(0, 300)).catch(() => {});
@@ -318,7 +334,6 @@ async function pesquisarEscalas(page1, aisp) {
         console.log("Nada de novo nesta checagem.");
     }
 
-    // ── Resumo, sempre enviado (ache ou não escala), com TODAS as áreas listadas ──
     var totalGeral = resultadoPorArea.reduce(function (soma, a) { return soma + a.total; }, 0);
     var resumo = "🔎 <b>Checagem concluída</b> — " + agora + "\n" +
         "Total: " + totalGeral + " escala(s) em " + resultadoPorArea.length + " área(s)\n\n" +
