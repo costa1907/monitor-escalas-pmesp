@@ -39,7 +39,9 @@ jobs:
         run: sudo apt-get update -y && sudo apt-get install -y openconnect
 
       - name: Conectar na VPN da PMESP
-        timeout-minutes: 2
+        timeout-minutes: 3
+        continue-on-error: true
+        id: vpn
         env:
           PMESP_VPN_USUARIO: ${{ secrets.PMESP_VPN_USUARIO }}
           PMESP_VPN_SENHA: ${{ secrets.PMESP_VPN_SENHA }}
@@ -52,11 +54,29 @@ jobs:
             --passwd-on-stdin \
             --servercert pin-sha256:ccVM9Z6xyx607/QtUIoHLJcnq5m53m1crfttZ6Y6AhA= \
             https://extranet.policiamilitar.sp.gov.br/
-          # dá um tempo pro túnel subir e o DNS interno ficar disponível
-          sleep 8
+          sleep 3
           sudo cat /tmp/openconnect.pid || (echo "❌ VPN não conectou" && exit 1)
 
+          # O processo da VPN pode subir antes da rede/DNS interno realmente
+          # ficarem prontos pra uso — em vez de confiar numa espera fixa, fica
+          # tentando resolver o nome do site até funcionar de verdade (até ~60s).
+          echo "Aguardando o DNS interno da PMESP responder..."
+          ok=""
+          for i in $(seq 1 20); do
+            if getent hosts intranet.policiamilitar.sp.gov.br > /dev/null 2>&1; then
+              echo "✅ DNS interno respondendo (tentativa $i)."
+              ok="1"
+              break
+            fi
+            sleep 3
+          done
+          if [ -z "$ok" ]; then
+            echo "❌ DNS interno não respondeu depois de esperar — a VPN pode não ter conectado direito."
+            exit 1
+          fi
+
       - name: Rodar checagem de escalas
+        if: steps.vpn.outcome == 'success'
         env:
           PMESP_USUARIO: ${{ secrets.PMESP_USUARIO }}
           PMESP_SENHA: ${{ secrets.PMESP_SENHA }}
@@ -69,6 +89,11 @@ jobs:
         continue-on-error: true
         id: checagem
         run: stdbuf -oL -eL node monitor.js
+
+      - name: Registrar falha de VPN (pra poder notificar)
+        if: steps.vpn.outcome == 'failure'
+        run: |
+          echo '{"erro":"A VPN não conseguiu conectar (ou o DNS interno não respondeu a tempo). Provavelmente instabilidade temporária do servidor VPN da PMESP.","novos":[],"resultadoPorArea":[]}' > resultado.json
 
       - name: Guardar screenshot do erro (se deu ruim)
         if: steps.checagem.outcome == 'failure'
@@ -94,8 +119,8 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: stdbuf -oL -eL node notificar.js
 
-      - name: Marcar job como falho (se a checagem falhou)
-        if: steps.checagem.outcome == 'failure'
+      - name: Marcar job como falho (se algo deu errado)
+        if: steps.vpn.outcome == 'failure' || steps.checagem.outcome == 'failure'
         run: exit 1
 
       - name: Salvar lista de escalas já avisadas
