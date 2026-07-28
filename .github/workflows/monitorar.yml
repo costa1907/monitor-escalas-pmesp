@@ -44,6 +44,7 @@ jobs:
             --pid-file=/tmp/openconnect.pid \
             --user="$PMESP_VPN_USUARIO" \
             --passwd-on-stdin \
+            --servercert pin-sha256:ccVM9Z6xyx607/QtUIoHLJcnq5m53m1crfttZ6Y6AhA= \
             https://extranet.policiamilitar.sp.gov.br/
           sleep 8
           sudo cat /tmp/openconnect.pid || (echo "❌ VPN não conectou" && exit 1)
