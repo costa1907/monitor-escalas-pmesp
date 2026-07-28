@@ -1,17 +1,13 @@
 name: Monitorar Escalas PMESP
-
 on:
   schedule:
     - cron: "*/30 * * * *"
   workflow_dispatch: {}
-
 permissions:
   contents: write
-
 concurrency:
   group: monitor-escalas-pmesp
   cancel-in-progress: false
-
 jobs:
   checar:
     runs-on: ubuntu-latest
@@ -19,22 +15,18 @@ jobs:
     steps:
       - name: Baixar código do repositório
         uses: actions/checkout@v4
-
       - name: Configurar Node.js
         uses: actions/setup-node@v4
         with:
           node-version: "20"
-
       - name: Instalar dependências
         run: npm install
-
       - name: Instalar navegador (Chromium) do Playwright
         run: npx playwright install --with-deps chromium
-
       - name: Instalar cliente VPN (openconnect, compatível com Cisco AnyConnect)
         run: sudo apt-get update -y && sudo apt-get install -y openconnect
-
       - name: Conectar na VPN da PMESP
+        timeout-minutes: 2
         env:
           PMESP_VPN_USUARIO: ${{ secrets.PMESP_VPN_USUARIO }}
           PMESP_VPN_SENHA: ${{ secrets.PMESP_VPN_SENHA }}
@@ -49,7 +41,6 @@ jobs:
             https://extranet.policiamilitar.sp.gov.br/
           sleep 8
           sudo cat /tmp/openconnect.pid || (echo "❌ VPN não conectou" && exit 1)
-
       - name: Rodar checagem de escalas
         env:
           PMESP_USUARIO: ${{ secrets.PMESP_USUARIO }}
@@ -59,7 +50,6 @@ jobs:
           PMESP_AISP: ${{ vars.PMESP_AISP }}
           LOGIN_URL: ${{ vars.LOGIN_URL }}
         run: node monitor.js
-
       - name: Guardar screenshot do erro (se deu ruim)
         if: failure()
         uses: actions/upload-artifact@v4
@@ -68,14 +58,12 @@ jobs:
           path: erro.png
           if-no-files-found: ignore
           retention-days: 7
-
       - name: Desconectar da VPN
         if: always()
         run: |
           if [ -f /tmp/openconnect.pid ]; then
             sudo kill "$(cat /tmp/openconnect.pid)" || true
           fi
-
       - name: Salvar lista de escalas já avisadas
         if: always()
         run: |
