@@ -101,38 +101,50 @@ async function preencherCampoGX(frame, nomeCampo, valor) {
 }
 
 // ── Login + navegação até a tela de pesquisa de escalas. Retorna a página (popup) ──
-async function fazerLoginEAbrirDelegada(browserContext) {
+// "onErro" é chamado com QUALQUER página aberta no momento da falha, pra sempre
+// conseguirmos tirar uma screenshot de debug, mesmo se travar antes da popup abrir.
+async function fazerLoginEAbrirDelegada(browserContext, onErro) {
     var page = await browserContext.newPage();
-    await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
-
-    var loginFrame = page.frameLocator('frame[name="meio"]').frameLocator("#mainMS");
-    await loginFrame.locator("#vUSRNUMCPFAUX").fill(PMESP_USUARIO);
-    await loginFrame.locator("#vUSRNUMCPFAUX").press("Tab").catch(() => {});
-    await loginFrame.locator("#vSENHA").fill(PMESP_SENHA);
-
-    var popupPromise = page.waitForEvent("popup", { timeout: 30000 });
-    await loginFrame.getByRole("button", { name: "Confirmar" }).click();
-    var page1 = await popupPromise;
-    await page1.waitForLoadState("domcontentloaded");
-    await page1.waitForTimeout(1500);
-
-    await page1.getByRole("cell", { name: "Inscrever PM na Escala Ativ Delegada" }).click({ timeout: 20000 });
-    await page1.waitForTimeout(1500);
-    await page1.waitForLoadState("networkidle").catch(() => {});
-
-    // Tela de "declaração de apto" — só costuma aparecer às vezes / na primeira vez.
-    // Tenta com timeout curto; se não achar, segue sem erro.
+    var page1 = null;
     try {
-        var embFrameApto = page1.frameLocator('iframe[name="Embpage"]');
-        await embFrameApto.locator("#vAPTO").check({ timeout: 3000 });
-        await embFrameApto.getByRole("button", { name: "Confirma" }).click({ timeout: 3000 });
-        await page1.waitForTimeout(1000);
-        await page1.waitForLoadState("networkidle").catch(() => {});
-    } catch (e) {
-        console.log("ℹ️ Tela de declaração de apto não apareceu desta vez (ok, segue o fluxo).");
-    }
+        await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
+        // dá tempo extra pra página terminar de montar os frames antes de mexer neles
+        await page.waitForLoadState("networkidle").catch(() => {});
+        await page.waitForTimeout(3000);
 
-    return page1;
+        var loginFrame = page.frameLocator('frame[name="meio"]').frameLocator("#mainMS");
+        await loginFrame.locator("#vUSRNUMCPFAUX").waitFor({ state: "visible", timeout: 45000 });
+        await loginFrame.locator("#vUSRNUMCPFAUX").fill(PMESP_USUARIO);
+        await loginFrame.locator("#vUSRNUMCPFAUX").press("Tab").catch(() => {});
+        await loginFrame.locator("#vSENHA").fill(PMESP_SENHA);
+
+        var popupPromise = page.waitForEvent("popup", { timeout: 30000 });
+        await loginFrame.getByRole("button", { name: "Confirmar" }).click();
+        page1 = await popupPromise;
+        await page1.waitForLoadState("domcontentloaded");
+        await page1.waitForTimeout(1500);
+
+        await page1.getByRole("cell", { name: "Inscrever PM na Escala Ativ Delegada" }).click({ timeout: 20000 });
+        await page1.waitForTimeout(1500);
+        await page1.waitForLoadState("networkidle").catch(() => {});
+
+        // Tela de "declaração de apto" — só costuma aparecer às vezes / na primeira vez.
+        // Tenta com timeout curto; se não achar, segue sem erro.
+        try {
+            var embFrameApto = page1.frameLocator('iframe[name="Embpage"]');
+            await embFrameApto.locator("#vAPTO").check({ timeout: 3000 });
+            await embFrameApto.getByRole("button", { name: "Confirma" }).click({ timeout: 3000 });
+            await page1.waitForTimeout(1000);
+            await page1.waitForLoadState("networkidle").catch(() => {});
+        } catch (e) {
+            console.log("ℹ️ Tela de declaração de apto não apareceu desta vez (ok, segue o fluxo).");
+        }
+
+        return page1;
+    } catch (err) {
+        if (typeof onErro === "function") await onErro(page1 || page, "login");
+        throw err;
+    }
 }
 
 // ── Pesquisa uma AISP e lê todas as páginas da grade de escalas ────────────
@@ -199,9 +211,14 @@ async function pesquisarEscalas(page1, aisp) {
     var novos = [];
     var browser = await chromium.launch({ headless: true });
     var page1 = null;
+    async function tirarScreenshotErro(pagina) {
+        if (!pagina) return;
+        try { await pagina.screenshot({ path: path.join(__dirname, "erro.png"), fullPage: true }); }
+        catch (e) { console.error("⚠️ Não consegui tirar a screenshot de erro:", e.message); }
+    }
     try {
-        var context = await browser.newContext();
-        page1 = await fazerLoginEAbrirDelegada(context);
+        var context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+        page1 = await fazerLoginEAbrirDelegada(context, tirarScreenshotErro);
 
         for (const aisp of AISPS_MONITORADAS) {
             var linhas = await pesquisarEscalas(page1, aisp);
@@ -216,7 +233,8 @@ async function pesquisarEscalas(page1, aisp) {
         }
     } catch (err) {
         console.error("❌ Erro durante a checagem:", err);
-        if (page1) { try { await page1.screenshot({ path: path.join(__dirname, "erro.png"), fullPage: true }); } catch (e) {} }
+        // se a screenshot já não foi tirada dentro do login, tenta tirar de page1 aqui
+        if (page1 && !fs.existsSync(path.join(__dirname, "erro.png"))) await tirarScreenshotErro(page1);
         if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
             await enviarTelegram("⚠️ O monitor de escalas deu erro: " + String(err).slice(0, 300)).catch(() => {});
         }
