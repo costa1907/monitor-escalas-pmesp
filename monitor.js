@@ -6,21 +6,19 @@
 // aparece uma escala que ainda não tinha sido vista antes.
 //
 // Fluxo mapeado com o Playwright Codegen direto no site real (intranet):
-//   1. http://intranet.policiamilitar.sp.gov.br/  → a tela inicial mostra o portal
-//      (avisos, calendário) — é preciso clicar na aba "Procedimentos" (barra azul
-//      vertical, #sideBarTabGestao) pra revelar o formulário de login.
-//   2. O formulário fica dentro de frames aninhados: frame[name="meio"] → frame#mainMS →
+//   1. http://intranet.policiamilitar.sp.gov.br/  → formulário de login fica
+//      dentro de frames aninhados: frame[name="meio"] → frame#mainMS →
 //      campos #vUSRNUMCPFAUX (CPF) e #vSENHA, botão "Confirmar".
-//   3. Ao confirmar, abre uma POPUP (nova janela) com o sistema de verdade.
-//   4. Nessa popup, clica na célula de menu "Inscrever PM na Escala Ativ Delegada".
-//   5. A tela de pesquisa fica dentro de um iframe[name="Embpage"]. Na primeira
+//   2. Ao confirmar, abre uma POPUP (nova janela) com o sistema de verdade.
+//   3. Nessa popup, clica na célula de menu "Inscrever PM na Escala Ativ Delegada".
+//   4. A tela de pesquisa fica dentro de um iframe[name="Embpage"]. Na primeira
 //      vez pode aparecer um checkbox "#vAPTO" + botão "Confirma" (declaração
 //      de apto) — o script tenta, mas ignora se não aparecer.
-//   6. Preenche AISP (#vIDFAGPGEOSST) e datas (#vDATINI/#vDATFIM) usando o MESMO
+//   5. Preenche AISP (#vIDFAGPGEOSST) e datas (#vDATINI/#vDATFIM) usando o MESMO
 //      truque de injeção via API interna do GeneXus (gx.setVar + onchange) já
 //      testado e usado há 290 versões no robô Tampermonkey — os campos de data
 //      são um widget de calendário, não aceitam preenchimento direto de texto.
-//   7. Clica em "Procurar" e lê a grade (#Grid1ContainerTbl), paginando pelo
+//   6. Clica em "Procurar" e lê a grade (#Grid1ContainerTbl), paginando pelo
 //      botão #NEXT até acabar.
 //
 // ⚠️ Isso é a MELHOR aposta com base no que foi gravado manualmente uma vez —
@@ -148,8 +146,15 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
         await loginFrame.getByRole("button", { name: "Confirmar" }).click();
         page1 = await popupPromise;
         await page1.waitForLoadState("domcontentloaded");
-        await page1.waitForTimeout(1500);
+        await page1.waitForTimeout(2000);
 
+        // Menu em cascata: passa o mouse em "SIRH" → abre submenu "Escala" → passa o
+        // mouse nele → abre o submenu final com "Inscrever PM na Escala Ativ Delegada".
+        // Precisa do hover em cada nível (não é link direto, é JS de onmouseover).
+        await page1.locator("td.ThemeClassicMainFolderText", { hasText: "SIRH" }).hover({ timeout: 15000 });
+        await page1.waitForTimeout(800);
+        await page1.getByText("Escala", { exact: true }).first().hover({ timeout: 10000 });
+        await page1.waitForTimeout(800);
         await page1.getByRole("cell", { name: "Inscrever PM na Escala Ativ Delegada" }).click({ timeout: 20000 });
         await page1.waitForTimeout(1500);
         await page1.waitForLoadState("networkidle").catch(() => {});
