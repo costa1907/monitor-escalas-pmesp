@@ -239,7 +239,11 @@ async function clicarProximaPaginaGX(frame) {
 }
 
 // ── Pesquisa uma AISP e lê todas as páginas da grade de escalas ────────────
-async function pesquisarEscalas(page1, aisp) {
+// "fingerprintAnteriorGlobal" é o retrato da grade de ANTES desta busca (última
+// página da AISP anterior, ou null na primeira). Serve pra confirmar que a busca
+// nova realmente carregou antes de começar a ler — sem isso, dá pra ler a grade
+// antiga por engano bem no instante da troca de AISP.
+async function pesquisarEscalas(page1, aisp, fingerprintAnteriorGlobal) {
     var embFrame = page1.frameLocator('iframe[name="Embpage"]');
     var embFrameHandle = page1.frame({ name: "Embpage" });
     if (!embFrameHandle) throw new Error("Não achei o iframe Embpage — a estrutura da página pode ter mudado.");
@@ -253,15 +257,31 @@ async function pesquisarEscalas(page1, aisp) {
     await preencherCampoGX(embFrameHandle, "vDATFIM", dataFim);
 
     await embFrame.getByRole("button", { name: "Procurar" }).click({ timeout: 15000 });
-    await page1.waitForTimeout(1500);
-    await page1.waitForLoadState("networkidle").catch(() => {});
+
+    // Espera a busca desta AISP carregar de verdade: fica checando a cada 500ms
+    // (até ~12s) se a grade mudou em relação ao estado anterior (outra AISP ou
+    // outra página). Se nunca mudar (ex: as duas realmente estão vazias), segue
+    // com o que tiver depois do teto de tentativas.
+    var linhasAtuais = null;
+    var fingerprintAtual = null;
+    for (var t = 0; t < 24; t++) {
+        await page1.waitForTimeout(500);
+        var linhasTeste = await embFrameHandle.evaluate(_lerLinhasGrade);
+        var fpTeste = JSON.stringify(linhasTeste);
+        if (fpTeste !== fingerprintAnteriorGlobal) {
+            linhasAtuais = linhasTeste;
+            fingerprintAtual = fpTeste;
+            break;
+        }
+    }
+    if (linhasAtuais === null) {
+        linhasAtuais = await embFrameHandle.evaluate(_lerLinhasGrade);
+        fingerprintAtual = JSON.stringify(linhasAtuais);
+    }
 
     var resultados = [];
     var paginasLidas = 0;
     var MAX_PAGINAS = 30; // teto de segurança — uma AISP real não deveria chegar nem perto disso
-
-    var linhasAtuais = await embFrameHandle.evaluate(_lerLinhasGrade);
-    var fingerprintAtual = JSON.stringify(linhasAtuais);
 
     while (paginasLidas < MAX_PAGINAS) {
         paginasLidas++;
@@ -295,7 +315,7 @@ async function pesquisarEscalas(page1, aisp) {
             break;
         }
     }
-    return resultados;
+    return { linhas: resultados, ultimoFingerprint: fingerprintAtual };
 }
 
 (async function main() {
@@ -317,8 +337,11 @@ async function pesquisarEscalas(page1, aisp) {
         page1 = await fazerLoginEAbrirDelegada(context, tirarScreenshotErro);
 
         var resultadoPorArea = []; // { aisp, nome, total } — TODAS as áreas verificadas, mesmo com 0
+        var fingerprintAnteriorGlobal = null;
         for (const aisp of AISPS_MONITORADAS) {
-            var linhas = await pesquisarEscalas(page1, aisp);
+            var resultadoBusca = await pesquisarEscalas(page1, aisp, fingerprintAnteriorGlobal);
+            var linhas = resultadoBusca.linhas;
+            fingerprintAnteriorGlobal = resultadoBusca.ultimoFingerprint;
             console.log("AISP " + aisp + " (" + _nomeDaAisp(aisp) + "): " + linhas.length + " linha(s) na grade.");
             resultadoPorArea.push({ aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length });
             for (const l of linhas) {
