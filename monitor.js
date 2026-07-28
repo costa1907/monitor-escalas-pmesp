@@ -257,32 +257,43 @@ async function pesquisarEscalas(page1, aisp) {
     await page1.waitForLoadState("networkidle").catch(() => {});
 
     var resultados = [];
-    var fingerprintAnterior = null;
-    var seguraPaginando = true;
     var paginasLidas = 0;
     var MAX_PAGINAS = 30; // teto de segurança — uma AISP real não deveria chegar nem perto disso
-    while (seguraPaginando && paginasLidas < MAX_PAGINAS) {
-        paginasLidas++;
-        var linhasDaPagina = await embFrameHandle.evaluate(_lerLinhasGrade);
-        var fingerprintAtual = JSON.stringify(linhasDaPagina);
 
-        // se a "nova" página é idêntica à anterior, o clique não avançou de verdade —
-        // para por aqui em vez de ficar lendo a mesma página repetidamente
-        if (fingerprintAtual === fingerprintAnterior) {
-            console.log("⚠️ Página não mudou após clicar em Próxima — encerrando paginação da AISP " + aisp + ".");
-            break;
-        }
-        fingerprintAnterior = fingerprintAtual;
-        resultados = resultados.concat(linhasDaPagina);
+    var linhasAtuais = await embFrameHandle.evaluate(_lerLinhasGrade);
+    var fingerprintAtual = JSON.stringify(linhasAtuais);
+
+    while (paginasLidas < MAX_PAGINAS) {
+        paginasLidas++;
+        resultados = resultados.concat(linhasAtuais);
 
         var temProxima = await embFrameHandle.evaluate(() => {
             var btn = document.getElementById("NEXT");
             return !!(btn && btn.style.display !== "none" && btn.style.visibility !== "hidden");
         });
-        if (!temProxima) { seguraPaginando = false; break; }
+        if (!temProxima) break;
+
         await clicarProximaPaginaGX(embFrameHandle);
-        await page1.waitForTimeout(1200);
-        await page1.waitForLoadState("networkidle").catch(() => {});
+
+        // O postback do GeneXus pode demorar mais que um tempo fixo — em vez de
+        // esperar um valor fixo e arriscar ler a grade antes dela atualizar,
+        // fica checando a cada 500ms (até ~8s) se a grade realmente mudou.
+        var mudou = false;
+        for (var tentativa = 0; tentativa < 16; tentativa++) {
+            await page1.waitForTimeout(500);
+            var novasLinhas = await embFrameHandle.evaluate(_lerLinhasGrade);
+            var novoFingerprint = JSON.stringify(novasLinhas);
+            if (novoFingerprint !== fingerprintAtual) {
+                linhasAtuais = novasLinhas;
+                fingerprintAtual = novoFingerprint;
+                mudou = true;
+                break;
+            }
+        }
+        if (!mudou) {
+            console.log("⚠️ Página não mudou mesmo após esperar — encerrando paginação da AISP " + aisp + ".");
+            break;
+        }
     }
     return resultados;
 }
