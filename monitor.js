@@ -4,7 +4,7 @@
 // do computador ligado. Faz login, entra na Atividade Delegada, pesquisa cada
 // AISP configurada, varre a grade (com paginação) e avisa no Telegram quando
 // aparece uma escala que ainda não tinha sido vista antes — e sempre manda um
-// resumo no final, ache ou não escala.
+// resumo no final, com TODAS as áreas listadas (ache ou não escala).
 //
 // Fluxo mapeado com o Playwright Codegen direto no site real (intranet):
 //   1. http://intranet.policiamilitar.sp.gov.br/  → formulário de login fica
@@ -80,6 +80,7 @@ function carregarVistos() {
 }
 function salvarVistos(set) {
     var lista = Array.from(set);
+    // evita o arquivo crescer pra sempre — mantém só os últimos 2000 registros
     if (lista.length > 2000) lista = lista.slice(lista.length - 2000);
     fs.writeFileSync(SEEN_PATH, JSON.stringify(lista, null, 0));
 }
@@ -99,6 +100,8 @@ async function enviarTelegram(texto) {
     if (!data.ok) console.error("❌ Falha ao enviar Telegram:", JSON.stringify(data));
 }
 
+// ── Injeta um valor num campo GeneXus via API interna (mesmo truque do robô) ──
+// Precisa de um objeto "Frame" de verdade (não FrameLocator) porque usa .evaluate().
 async function preencherCampoGX(frame, nomeCampo, valor) {
     return frame.evaluate(({ nomeCampo, valor }) => {
         if (typeof gx === "undefined" || !gx.O) return false;
@@ -121,6 +124,9 @@ async function preencherCampoGX(frame, nomeCampo, valor) {
     }, { nomeCampo, valor });
 }
 
+// ── Clica na aba "Procedimentos" (barra azul vertical) que revela o formulário de
+// login — procura em todos os frames da página, já que não sabemos de antemão em
+// qual frame exatamente ela vive.
 async function clicarAbaProcedimentosSeExistir(page) {
     for (const frame of page.frames()) {
         try {
@@ -136,14 +142,20 @@ async function clicarAbaProcedimentosSeExistir(page) {
     return false;
 }
 
+// ── Login + navegação até a tela de pesquisa de escalas. Retorna a página (popup) ──
+// "onErro" é chamado com QUALQUER página aberta no momento da falha, pra sempre
+// conseguirmos tirar uma screenshot de debug, mesmo se travar antes da popup abrir.
 async function fazerLoginEAbrirDelegada(browserContext, onErro) {
     var page = await browserContext.newPage();
     var page1 = null;
     try {
         await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
+        // dá tempo extra pra página terminar de montar os frames antes de mexer neles
         await page.waitForLoadState("networkidle").catch(() => {});
         await page.waitForTimeout(3000);
 
+        // a tela inicial mostra o portal (avisos, calendário) — o formulário de login só
+        // aparece depois de clicar na aba "Procedimentos" da barra lateral esquerda
         await clicarAbaProcedimentosSeExistir(page);
         await page.waitForTimeout(2000);
         await page.waitForLoadState("networkidle").catch(() => {});
@@ -160,6 +172,9 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
         await page1.waitForLoadState("domcontentloaded");
         await page1.waitForTimeout(2000);
 
+        // Menu em cascata: passa o mouse em "SIRH" → abre submenu "Escala" → passa o
+        // mouse nele → abre o submenu final com "Inscrever PM na Escala Ativ Delegada".
+        // Precisa do hover em cada nível (não é link direto, é JS de onmouseover).
         await page1.locator("td.ThemeClassicMainFolderText", { hasText: "SIRH" }).hover({ timeout: 15000 });
         await page1.waitForTimeout(800);
         await page1.getByText("Escala", { exact: true }).first().hover({ timeout: 10000 });
@@ -168,6 +183,8 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
         await page1.waitForTimeout(1500);
         await page1.waitForLoadState("networkidle").catch(() => {});
 
+        // Tela de "declaração de apto" — só costuma aparecer às vezes / na primeira vez.
+        // Tenta com timeout curto; se não achar, segue sem erro.
         try {
             var embFrameApto = page1.frameLocator('iframe[name="Embpage"]');
             await embFrameApto.locator("#vAPTO").check({ timeout: 3000 });
@@ -185,6 +202,7 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
     }
 }
 
+// ── Pesquisa uma AISP e lê todas as páginas da grade de escalas ────────────
 async function pesquisarEscalas(page1, aisp) {
     var embFrame = page1.frameLocator('iframe[name="Embpage"]');
     var embFrameHandle = page1.frame({ name: "Embpage" });
@@ -257,11 +275,11 @@ async function pesquisarEscalas(page1, aisp) {
         var context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
         page1 = await fazerLoginEAbrirDelegada(context, tirarScreenshotErro);
 
-        var totalEncontradasPorArea = [];
+        var resultadoPorArea = []; // { aisp, nome, total } — TODAS as áreas verificadas, mesmo com 0
         for (const aisp of AISPS_MONITORADAS) {
             var linhas = await pesquisarEscalas(page1, aisp);
             console.log("AISP " + aisp + " (" + _nomeDaAisp(aisp) + "): " + linhas.length + " linha(s) na grade.");
-            if (linhas.length > 0) totalEncontradasPorArea.push({ aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length });
+            resultadoPorArea.push({ aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length });
             for (const l of linhas) {
                 var chave = aisp + "_" + l.data + "_" + l.horaIni + "x" + l.horaFim + "_" + l.escalaId;
                 if (!vistos.has(chave)) {
@@ -272,6 +290,7 @@ async function pesquisarEscalas(page1, aisp) {
         }
     } catch (err) {
         console.error("❌ Erro durante a checagem:", err);
+        // se a screenshot já não foi tirada dentro do login, tenta tirar de page1 aqui
         if (page1 && !fs.existsSync(path.join(__dirname, "erro.png"))) await tirarScreenshotErro(page1);
         if (TELEGRAM_BOT_TOKEN && TELEGRAM_CHAT_ID) {
             await enviarTelegram("⚠️ O monitor de escalas deu erro: " + String(err).slice(0, 300)).catch(() => {});
@@ -299,18 +318,17 @@ async function pesquisarEscalas(page1, aisp) {
         console.log("Nada de novo nesta checagem.");
     }
 
+    // ── Resumo, sempre enviado (ache ou não escala), com TODAS as áreas listadas ──
+    var totalGeral = resultadoPorArea.reduce(function (soma, a) { return soma + a.total; }, 0);
     var resumo = "🔎 <b>Checagem concluída</b> — " + agora + "\n" +
-        AISPS_MONITORADAS.length + " área(s) verificada(s).\n\n";
-    if (totalEncontradasPorArea.length > 0) {
-        resumo += "Escalas disponíveis agora:\n" + totalEncontradasPorArea
-            .map(function (a) { return "• " + a.nome + " (AISP " + a.aisp + "): " + a.total; })
-            .join("\n") + "\n\n";
-    } else {
-        resumo += "Nenhuma escala disponível em nenhuma área agora.\n\n";
-    }
-    resumo += novos.length > 0
-        ? ("🎉 " + novos.length + " são NOVAS desde a última checagem (aviso já mandado acima).")
-        : "Nenhuma novidade desde a última checagem.";
+        "Total: " + totalGeral + " escala(s) em " + resultadoPorArea.length + " área(s)\n\n" +
+        resultadoPorArea
+            .map(function (a) { return (a.total > 0 ? "🟢 " : "⚪ ") + a.nome + " (" + a.aisp + "): " + a.total; })
+            .join("\n") +
+        "\n\n" +
+        (novos.length > 0
+            ? ("🎉 " + novos.length + " são NOVAS desde a última checagem (aviso já mandado acima).")
+            : "Nenhuma novidade desde a última checagem.");
     await enviarTelegram(resumo);
 
     salvarVistos(vistos);
