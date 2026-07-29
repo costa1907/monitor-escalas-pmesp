@@ -46,6 +46,12 @@ jobs:
           PMESP_VPN_USUARIO: ${{ secrets.PMESP_VPN_USUARIO }}
           PMESP_VPN_SENHA: ${{ secrets.PMESP_VPN_SENHA }}
         run: |
+          # IMPORTANTE: mesmo com --background, o "sudo openconnect" mantinha a
+          # saída (stdout) conectada ao cano deste passo do GitHub Actions — então
+          # o passo NUNCA era considerado terminado (ficava preso pra sempre),
+          # mesmo já com a VPN conectada de verdade. Corrigido jogando a saída
+          # pra um arquivo de log e soltando o processo em segundo plano de
+          # verdade com "&" + "disown", sem o passo ficar esperando por ele.
           echo "$PMESP_VPN_SENHA" | sudo openconnect \
             --background \
             --pid-file=/tmp/openconnect.pid \
@@ -53,9 +59,27 @@ jobs:
             --authgroup="53 - CPRV" \
             --passwd-on-stdin \
             --servercert pin-sha256:ccVM9Z6xyx607/QtUIoHLJcnq5m53m1crfttZ6Y6AhA= \
-            https://extranet.policiamilitar.sp.gov.br/
-          sleep 3
-          sudo cat /tmp/openconnect.pid || (echo "❌ VPN não conectou" && exit 1)
+            https://extranet.policiamilitar.sp.gov.br/ \
+            > /tmp/openconnect.log 2>&1 &
+          disown
+
+          echo "Aguardando o arquivo de PID da VPN aparecer..."
+          ok_pid=""
+          for i in $(seq 1 15); do
+            if sudo test -f /tmp/openconnect.pid; then
+              ok_pid="1"
+              break
+            fi
+            sleep 1
+          done
+          echo "----- log do openconnect -----"
+          sudo cat /tmp/openconnect.log || true
+          echo "-------------------------------"
+          if [ -z "$ok_pid" ]; then
+            echo "❌ VPN não conectou (nenhum arquivo de PID apareceu)."
+            exit 1
+          fi
+          sudo cat /tmp/openconnect.pid
 
           # O processo da VPN pode subir antes da rede/DNS interno realmente
           # ficarem prontos pra uso — em vez de confiar numa espera fixa, fica
@@ -107,8 +131,8 @@ jobs:
       - name: Desconectar da VPN
         if: always()
         run: |
-          if [ -f /tmp/openconnect.pid ]; then
-            sudo kill "$(cat /tmp/openconnect.pid)" || true
+          if sudo test -f /tmp/openconnect.pid; then
+            sudo kill "$(sudo cat /tmp/openconnect.pid)" || true
           fi
           sleep 2
 
