@@ -46,19 +46,20 @@ jobs:
           PMESP_VPN_USUARIO: ${{ secrets.PMESP_VPN_USUARIO }}
           PMESP_VPN_SENHA: ${{ secrets.PMESP_VPN_SENHA }}
         run: |
-          # IMPORTANTE: mesmo redirecionando a saída e usando "&" + "disown", o
-          # "sudo" no Ubuntu usa PTY por padrão (use_pty), o que ainda prendia o
-          # passo. Corrigido de vez com "setsid" (desgruda completamente da sessão
-          # do terminal) e lendo a senha de um ARQUIVO temporário em vez de um pipe
-          # "ao vivo" (echo | ...), que também podia ficar pendurado.
+          # IMPORTANTE: várias tentativas anteriores (redirecionar saída + "&" +
+          # "disown", depois "setsid") ainda prendiam o passo por causa de como o
+          # "sudo" usa PTY por baixo dos panos no Ubuntu. Resolvido usando a flag
+          # OFICIAL do próprio sudo pra rodar em segundo plano ("-b"), que já cuida
+          # de tudo isso direito, sem precisar empilhar truques por cima.
+          #
           # O arquivo de senha precisa poder ser LIDO pelo próprio shell do runner
-          # (usuário comum) — é ele quem abre o arquivo pra "alimentar" o comando
-          # ANTES de virar sudo, não o processo do openconnect em si. Por isso não
-          # usamos sudo pra criar esse arquivo (senão só o root conseguiria lê-lo).
+          # (usuário comum) — é ele quem abre o arquivo ANTES de virar sudo, não o
+          # processo do openconnect em si. Por isso não usamos sudo pra criar esse
+          # arquivo (senão só o root conseguiria lê-lo).
           echo "$PMESP_VPN_SENHA" > /tmp/vpnpass
           chmod 600 /tmp/vpnpass
 
-          sudo setsid openconnect \
+          sudo -b openconnect \
             --background \
             --pid-file=/tmp/openconnect.pid \
             --user="$PMESP_VPN_USUARIO" \
@@ -66,8 +67,7 @@ jobs:
             --passwd-on-stdin \
             --servercert pin-sha256:ccVM9Z6xyx607/QtUIoHLJcnq5m53m1crfttZ6Y6AhA= \
             https://extranet.policiamilitar.sp.gov.br/ \
-            < /tmp/vpnpass > /tmp/openconnect.log 2>&1 &
-          disown
+            < /tmp/vpnpass > /tmp/openconnect.log 2>&1
           sleep 1
           rm -f /tmp/vpnpass
 
@@ -106,6 +106,18 @@ jobs:
             echo "❌ DNS interno não respondeu depois de esperar — a VPN pode não ter conectado direito."
             exit 1
           fi
+
+          echo ""
+          echo "✅ VPN conectada com sucesso — essa etapa já terminou de verdade."
+          echo "ℹ️  Se ela continuar parecendo 'presa' aqui na tela (bolinha girando sem"
+          echo "    fim), é só um comportamento visual do GitHub — o processo da VPN"
+          echo "    continua rodando em segundo plano de propósito até o fim do job,"
+          echo "    e por causa disso o navegador às vezes não atualiza o ícone dessa"
+          echo "    etapa pra 'concluído' nem libera o log ao vivo da próxima etapa."
+          echo "    NÃO CANCELE o workflow por causa disso — ele já está avançando."
+          echo "    Pra acompanhar: espere o job terminar (ou dê F5/reabra a aba) e"
+          echo "    abra a etapa 'Rodar checagem de escalas' — o log completo, com"
+          echo "    uma linha por AISP e por página, vai estar lá certinho."
 
       - name: Rodar checagem de escalas
         if: steps.vpn.outcome == 'success'
