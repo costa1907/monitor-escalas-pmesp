@@ -51,8 +51,12 @@ jobs:
           # passo. Corrigido de vez com "setsid" (desgruda completamente da sessão
           # do terminal) e lendo a senha de um ARQUIVO temporário em vez de um pipe
           # "ao vivo" (echo | ...), que também podia ficar pendurado.
-          echo "$PMESP_VPN_SENHA" | sudo tee /tmp/vpnpass > /dev/null
-          sudo chmod 600 /tmp/vpnpass
+          # O arquivo de senha precisa poder ser LIDO pelo próprio shell do runner
+          # (usuário comum) — é ele quem abre o arquivo pra "alimentar" o comando
+          # ANTES de virar sudo, não o processo do openconnect em si. Por isso não
+          # usamos sudo pra criar esse arquivo (senão só o root conseguiria lê-lo).
+          echo "$PMESP_VPN_SENHA" > /tmp/vpnpass
+          chmod 600 /tmp/vpnpass
 
           sudo setsid openconnect \
             --background \
@@ -65,7 +69,7 @@ jobs:
             < /tmp/vpnpass > /tmp/openconnect.log 2>&1 &
           disown
           sleep 1
-          sudo rm -f /tmp/vpnpass
+          rm -f /tmp/vpnpass
 
           echo "Aguardando o arquivo de PID da VPN aparecer..."
           ok_pid=""
