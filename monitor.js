@@ -210,6 +210,15 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
 // Colunas da grade, na ordem: (checkbox) | (ícone) | ID | Dia Sem. | Data |
 // Hora Ini. | Hora Tér. | Data Lim. Inscr. | AISP | CIA Resp. | Efetivo Tot. |
 // Inscritos | Jornada Delegada Ambiental
+// Algumas células da grade são renderizadas como campo de input (não texto puro),
+// então "textContent" fica vazio nelas — essa função tenta o input primeiro e
+// cai pro texto normal se não achar.
+function _textoCelula(td) {
+    if (!td) return "";
+    var inp = td.querySelector("input, textarea, select");
+    if (inp && typeof inp.value === "string" && inp.value.trim() !== "") return inp.value.trim();
+    return (td.textContent || "").trim();
+}
 function _lerLinhasGrade() {
     var tabela = document.getElementById("Grid1ContainerTbl") ||
         document.querySelector('[id^="Grid1ContainerTbl"]') || document.querySelector(".GridCardTable");
@@ -220,14 +229,32 @@ function _lerLinhasGrade() {
         var colunas = linha.querySelectorAll("td");
         if (colunas.length < 12) return;
         out.push({
-            escalaId: colunas[2].textContent.trim(),
-            data: colunas[4].textContent.trim(),
-            horaIni: colunas[5].textContent.trim(),
-            horaFim: colunas[6].textContent.trim(),
-            dataLimite: colunas[7].textContent.trim(),
-            efetivoTotal: colunas[10].textContent.trim(),
-            inscritos: colunas[11].textContent.trim()
+            escalaId: _textoCelula(colunas[2]),
+            data: _textoCelula(colunas[4]),
+            horaIni: _textoCelula(colunas[5]),
+            horaFim: _textoCelula(colunas[6]),
+            dataLimite: _textoCelula(colunas[7]),
+            efetivoTotal: _textoCelula(colunas[10]),
+            inscritos: _textoCelula(colunas[11])
         });
+    });
+    return out;
+}
+
+// ── Diagnóstico: dump bruto de todas as colunas da 1ª linha da grade, usado só
+// se algum campo esperado (ex: Efetivo Total) continuar vindo vazio — ajuda a
+// achar o índice certo da coluna sem precisar de mais uma rodada de tentativa.
+function _debugColunasDaPrimeiraLinha() {
+    var tabela = document.getElementById("Grid1ContainerTbl") ||
+        document.querySelector('[id^="Grid1ContainerTbl"]') || document.querySelector(".GridCardTable");
+    if (!tabela) return null;
+    var linha = tabela.querySelector('tr[id^="Grid1ContainerRow"], tr.GridCardRow, tr.GridRow');
+    if (!linha) return null;
+    var colunas = linha.querySelectorAll("td");
+    var out = [];
+    colunas.forEach(function (td, i) {
+        var inp = td.querySelector("input, textarea, select");
+        out.push(i + ": \"" + (td.textContent || "").trim() + "\"" + (inp ? " [input value=\"" + (inp.value || "") + "\"]" : ""));
     });
     return out;
 }
@@ -266,11 +293,14 @@ async function clicarProximaPaginaGX(frame) {
 }
 
 // ── Pesquisa uma AISP e lê todas as páginas da grade de escalas ────────────
-// "fingerprintAnteriorGlobal" é o retrato da grade de ANTES desta busca (última
-// página da AISP anterior, ou null na primeira). Serve pra confirmar que a busca
-// nova realmente carregou antes de começar a ler — sem isso, dá pra ler a grade
-// antiga por engano bem no instante da troca de AISP.
-async function pesquisarEscalas(page1, aisp, fingerprintAnteriorGlobal) {
+// IMPORTANTE: a confirmação de que a busca carregou compara com o estado da
+// PRÓPRIA grade capturado bem antes de clicar em "Procurar" (não com o resultado
+// da AISP anterior). Isso corrige um bug real: na primeira AISP da lista não
+// existe "resultado anterior" (era null), e a grade nesse momento pode estar
+// num estado transitório (ex: "[]" ainda carregando) que já diferia de null —
+// fazendo o código aceitar uma leitura vazia/incompleta como se already fosse o
+// resultado final, mesmo a busca ainda não tendo terminado de verdade.
+async function pesquisarEscalas(page1, aisp) {
     console.log("🔎 Pesquisando " + _nomeDaAisp(aisp) + " (AISP " + aisp + ")...");
     var embFrame = page1.frameLocator('iframe[name="Embpage"]');
     var embFrameHandle = page1.frame({ name: "Embpage" });
@@ -278,6 +308,10 @@ async function pesquisarEscalas(page1, aisp, fingerprintAnteriorGlobal) {
 
     var dataIni = formatarDataBR(hoje());
     var dataFim = formatarDataBR(new Date(hoje().getTime() + JANELA_DIAS * 24 * 60 * 60 * 1000));
+
+    // Retrato da grade ANTES de mexer em qualquer coisa — essa é a base de
+    // comparação usada logo abaixo, pra garantir que detectamos uma mudança real.
+    var fingerprintAntes = JSON.stringify(await embFrameHandle.evaluate(_lerLinhasGrade));
 
     await embFrame.locator("#vIDFAGPGEOSST").fill(aisp).catch(() => {});
     await preencherCampoGX(embFrameHandle, "vIDFAGPGEOSST", aisp);
@@ -291,8 +325,8 @@ async function pesquisarEscalas(page1, aisp, fingerprintAnteriorGlobal) {
     await embFrame.getByRole("button", { name: "Procurar" }).click({ timeout: 15000 });
 
     // Espera a busca desta AISP carregar de verdade: fica checando a cada 300ms
-    // (até ~12s) se a grade mudou em relação ao estado anterior (outra AISP ou
-    // outra página). Se nunca mudar (ex: as duas realmente estão vazias), segue
+    // (até ~12s) se a grade mudou em relação ao estado de ANTES de clicar em
+    // Procurar. Se nunca mudar (ex: realmente não tem nenhuma escala), segue
     // com o que tiver depois do teto de tentativas.
     var linhasAtuais = null;
     var fingerprintAtual = null;
@@ -300,7 +334,7 @@ async function pesquisarEscalas(page1, aisp, fingerprintAnteriorGlobal) {
         await page1.waitForTimeout(300);
         var linhasTeste = await embFrameHandle.evaluate(_lerLinhasGrade);
         var fpTeste = JSON.stringify(linhasTeste);
-        if (fpTeste !== fingerprintAnteriorGlobal) {
+        if (fpTeste !== fingerprintAntes) {
             linhasAtuais = linhasTeste;
             fingerprintAtual = fpTeste;
             break;
@@ -367,7 +401,7 @@ async function pesquisarEscalas(page1, aisp, fingerprintAnteriorGlobal) {
             break;
         }
     }
-    return { linhas: resultados, ultimoFingerprint: fingerprintAtual };
+    return { linhas: resultados };
 }
 
 (async function main() {
@@ -389,11 +423,21 @@ async function pesquisarEscalas(page1, aisp, fingerprintAnteriorGlobal) {
         page1 = await fazerLoginEAbrirDelegada(context, tirarScreenshotErro);
 
         var resultadoPorArea = []; // { aisp, nome, total } — TODAS as áreas verificadas, mesmo com 0
-        var fingerprintAnteriorGlobal = null;
+        var jaMostrouDebugColunas = false;
         for (const aisp of AISPS_MONITORADAS) {
-            var resultadoBusca = await pesquisarEscalas(page1, aisp, fingerprintAnteriorGlobal);
+            var resultadoBusca = await pesquisarEscalas(page1, aisp);
             var linhas = resultadoBusca.linhas;
-            fingerprintAnteriorGlobal = resultadoBusca.ultimoFingerprint;
+            if (!jaMostrouDebugColunas && linhas.length > 0 && !linhas[0].efetivoTotal) {
+                jaMostrouDebugColunas = true;
+                try {
+                    var embFrameHandleDebug = page1.frame({ name: "Embpage" });
+                    var dump = await embFrameHandleDebug.evaluate(_debugColunasDaPrimeiraLinha);
+                    if (dump) {
+                        console.log("🔬 DEBUG — colunas cruas da 1ª linha (Efetivo Total veio vazio):");
+                        dump.forEach(function (l) { console.log("     " + l); });
+                    }
+                } catch (e) {}
+            }
             console.log("AISP " + aisp + " (" + _nomeDaAisp(aisp) + "): " + linhas.length + " linha(s) na grade.");
             resultadoPorArea.push({ aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length });
             for (const l of linhas) {
