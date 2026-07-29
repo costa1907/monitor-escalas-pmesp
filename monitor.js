@@ -207,6 +207,9 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
 }
 
 // ── Lê as linhas da grade atual (dentro do frame Embpage) ──────────────────
+// Colunas da grade, na ordem: (checkbox) | (ícone) | ID | Dia Sem. | Data |
+// Hora Ini. | Hora Tér. | Data Lim. Inscr. | AISP | CIA Resp. | Efetivo Tot. |
+// Inscritos | Jornada Delegada Ambiental
 function _lerLinhasGrade() {
     var tabela = document.getElementById("Grid1ContainerTbl") ||
         document.querySelector('[id^="Grid1ContainerTbl"]') || document.querySelector(".GridCardTable");
@@ -215,12 +218,15 @@ function _lerLinhasGrade() {
     var out = [];
     linhas.forEach(function (linha) {
         var colunas = linha.querySelectorAll("td");
-        if (colunas.length < 7) return;
+        if (colunas.length < 12) return;
         out.push({
             escalaId: colunas[2].textContent.trim(),
             data: colunas[4].textContent.trim(),
             horaIni: colunas[5].textContent.trim(),
-            horaFim: colunas[6].textContent.trim()
+            horaFim: colunas[6].textContent.trim(),
+            dataLimite: colunas[7].textContent.trim(),
+            efetivoTotal: colunas[10].textContent.trim(),
+            inscritos: colunas[11].textContent.trim()
         });
     });
     return out;
