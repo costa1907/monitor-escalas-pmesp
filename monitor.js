@@ -16,7 +16,7 @@
 //      de apto) — o script tenta, mas ignora se não aparecer.
 //   5. Preenche AISP (#vIDFAGPGEOSST) e datas (#vDATINI/#vDATFIM) usando o MESMO
 //      truque de injeção via API interna do GeneXus (gx.setVar + onchange) já
-//      testado e usado há 290 versões no robô Tampermonkey — os campos de data
+//      testado e usado há centenas de versões no robô Tampermonkey — os campos de data
 //      são um widget de calendário, não aceitam preenchimento direto de texto.
 //   6. Clica em "Procurar" e lê a grade (#Grid1ContainerTbl), paginando pelo
 //      botão #NEXT até acabar.
@@ -40,28 +40,30 @@ const PMESP_SENHA = process.env.PMESP_SENHA;
 // VPN já foi desconectada (veja o workflow monitorar.yml).
 const RESULTADO_PATH = path.join(__dirname, "resultado.json");
 
-// Todas as áreas da Atividade Delegada, as mesmas 17 do robô Tampermonkey
-// (MODOS_ROBO.DELEGADA.areas). Usadas por padrão — se a variável de repositório
-// PMESP_AISP estiver definida, ela sobrescreve essa lista (só os códigos, separados
-// por vírgula) e monitora só as áreas escolhidas em vez de todas.
+// Todas as áreas da Atividade Delegada, as mesmas 18 do robô Tampermonkey
+// (MODOS_ROBO.DELEGADA.areas, atualizado em 28/07/2026 — códigos novos 857xx).
+// Usadas por padrão — se a variável de repositório PMESP_AISP estiver definida,
+// ela sobrescreve essa lista (só os códigos, separados por vírgula) e monitora
+// só as áreas escolhidas em vez de todas.
 const TODAS_AREAS_DELEGADA = [
-    { nome: "Centro Novo", aisp: "82913" },
-    { nome: "Cenas Abertas de Uso", aisp: "85254" },
-    { nome: "Rua Santa Ifigênia", aisp: "82904" },
-    { nome: "Rua 25 de Março", aisp: "82903" },
-    { nome: "Rua Florêncio de Abreu", aisp: "82912" },
-    { nome: "Av. Liberdade", aisp: "82914" },
-    { nome: "Praça da Sé", aisp: "85029" },
-    { nome: "Triângulo Histórico", aisp: "82907" },
-    { nome: "Av. Paulista", aisp: "82911" },
-    { nome: "Praça Agente Cícero", aisp: "82875" },
-    { nome: "Rua Ipanema", aisp: "82893" },
-    { nome: "Equipe Volante Mooca", aisp: "82894" },
-    { nome: "Rua José Paulino", aisp: "82906" },
-    { nome: "Rua Monsenhor de Andrade", aisp: "82916" },
-    { nome: "Rua Tiers - Vautier", aisp: "82892" },
-    { nome: "Largo da Concórdia", aisp: "82905" },
-    { nome: "Rua Oriente", aisp: "82910" }
+    { nome: "25 de Março", aisp: "85760" },
+    { nome: "Florêncio de Abreu", aisp: "85759" },
+    { nome: "José Paulino", aisp: "85758" },
+    { nome: "Triângulo Histórico", aisp: "85757" },
+    { nome: "Paulista", aisp: "85756" },
+    { nome: "Centro Novo", aisp: "85755" },
+    { nome: "Liberdade", aisp: "85754" },
+    { nome: "Roosevelt", aisp: "85753" },
+    { nome: "Sé", aisp: "85752" },
+    { nome: "Marechal Deodoro", aisp: "85751" },
+    { nome: "Santa Casa", aisp: "85750" },
+    { nome: "Cambuci", aisp: "85749" },
+    { nome: "Santa Ifigênia", aisp: "85748" },
+    { nome: "Volante Cenas Abertas de Uso", aisp: "85745" },
+    { nome: "Oriente", aisp: "85744" },
+    { nome: "Concórdia", aisp: "85743" },
+    { nome: "Brás", aisp: "85742" },
+    { nome: "Feira da Madrugada", aisp: "85741" }
 ];
 function _nomeDaAisp(aisp) {
     var a = TODAS_AREAS_DELEGADA.find(function (x) { return x.aisp === aisp; });
@@ -147,14 +149,17 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
     try {
         await page.goto(LOGIN_URL, { waitUntil: "domcontentloaded" });
         // dá tempo extra pra página terminar de montar os frames antes de mexer neles
-        await page.waitForLoadState("networkidle").catch(() => {});
-        await page.waitForTimeout(3000);
+        // (timeout curto: o site fica com requisições de fundo o tempo todo, então
+        // "networkidle" quase nunca dispara de verdade — sem o timeout curto, isso
+        // ficava até 30s parado à toa em cada uma dessas esperas)
+        await page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
+        await page.waitForTimeout(1500);
 
         // a tela inicial mostra o portal (avisos, calendário) — o formulário de login só
         // aparece depois de clicar na aba "Procedimentos" da barra lateral esquerda
         await clicarAbaProcedimentosSeExistir(page);
-        await page.waitForTimeout(2000);
-        await page.waitForLoadState("networkidle").catch(() => {});
+        await page.waitForTimeout(1000);
+        await page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
 
         var loginFrame = page.frameLocator('frame[name="meio"]').frameLocator("#mainMS");
         await loginFrame.locator("#vUSRNUMCPFAUX").waitFor({ state: "visible", timeout: 45000 });
@@ -166,18 +171,21 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
         await loginFrame.getByRole("button", { name: "Confirmar" }).click();
         page1 = await popupPromise;
         await page1.waitForLoadState("domcontentloaded");
-        await page1.waitForTimeout(2000);
+        await page1.waitForTimeout(1200);
 
         // Menu em cascata: passa o mouse em "SIRH" → abre submenu "Escala" → passa o
         // mouse nele → abre o submenu final com "Inscrever PM na Escala Ativ Delegada".
         // Precisa do hover em cada nível (não é link direto, é JS de onmouseover).
         await page1.locator("td.ThemeClassicMainFolderText", { hasText: "SIRH" }).hover({ timeout: 15000 });
-        await page1.waitForTimeout(800);
+        await page1.waitForTimeout(500);
         await page1.getByText("Escala", { exact: true }).first().hover({ timeout: 10000 });
-        await page1.waitForTimeout(800);
+        await page1.waitForTimeout(500);
         await page1.getByRole("cell", { name: "Inscrever PM na Escala Ativ Delegada" }).click({ timeout: 20000 });
+        // O robô Tampermonkey usa 1500ms aqui de propósito (DELAY_TRAVA_VE_CLIQUE_MS) —
+        // o comentário original dele já avisa que esse postback específico demora mais
+        // que os outros, então mantém esse valor testado em vez de um menor.
         await page1.waitForTimeout(1500);
-        await page1.waitForLoadState("networkidle").catch(() => {});
+        await page1.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
 
         // Tela de "declaração de apto" — só costuma aparecer às vezes / na primeira vez.
         // Tenta com timeout curto; se não achar, segue sem erro.
@@ -185,8 +193,8 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
             var embFrameApto = page1.frameLocator('iframe[name="Embpage"]');
             await embFrameApto.locator("#vAPTO").check({ timeout: 3000 });
             await embFrameApto.getByRole("button", { name: "Confirma" }).click({ timeout: 3000 });
-            await page1.waitForTimeout(1000);
-            await page1.waitForLoadState("networkidle").catch(() => {});
+            await page1.waitForTimeout(700);
+            await page1.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
         } catch (e) {
             console.log("ℹ️ Tela de declaração de apto não apareceu desta vez (ok, segue o fluxo).");
         }
@@ -256,16 +264,20 @@ async function pesquisarEscalas(page1, aisp, fingerprintAnteriorGlobal) {
     await preencherCampoGX(embFrameHandle, "vDATINI", dataIni);
     await preencherCampoGX(embFrameHandle, "vDATFIM", dataFim);
 
+    // Mesma pausa curta que o robô Tampermonkey dá antes de clicar em Pesquisar
+    // (DELAY_PRE_PESQUISA_MS) — dá tempo do GeneXus assimilar os campos preenchidos
+    // via injeção antes do clique, evitando pesquisar com o formulário "pela metade".
+    await page1.waitForTimeout(150);
     await embFrame.getByRole("button", { name: "Procurar" }).click({ timeout: 15000 });
 
-    // Espera a busca desta AISP carregar de verdade: fica checando a cada 500ms
+    // Espera a busca desta AISP carregar de verdade: fica checando a cada 300ms
     // (até ~12s) se a grade mudou em relação ao estado anterior (outra AISP ou
     // outra página). Se nunca mudar (ex: as duas realmente estão vazias), segue
     // com o que tiver depois do teto de tentativas.
     var linhasAtuais = null;
     var fingerprintAtual = null;
-    for (var t = 0; t < 24; t++) {
-        await page1.waitForTimeout(500);
+    for (var t = 0; t < 40; t++) {
+        await page1.waitForTimeout(300);
         var linhasTeste = await embFrameHandle.evaluate(_lerLinhasGrade);
         var fpTeste = JSON.stringify(linhasTeste);
         if (fpTeste !== fingerprintAnteriorGlobal) {
@@ -297,10 +309,10 @@ async function pesquisarEscalas(page1, aisp, fingerprintAnteriorGlobal) {
 
         // O postback do GeneXus pode demorar mais que um tempo fixo — em vez de
         // esperar um valor fixo e arriscar ler a grade antes dela atualizar,
-        // fica checando a cada 500ms (até ~8s) se a grade realmente mudou.
+        // fica checando a cada 300ms (até ~8s) se a grade realmente mudou.
         var mudou = false;
-        for (var tentativa = 0; tentativa < 16; tentativa++) {
-            await page1.waitForTimeout(500);
+        for (var tentativa = 0; tentativa < 27; tentativa++) {
+            await page1.waitForTimeout(300);
             var novasLinhas = await embFrameHandle.evaluate(_lerLinhasGrade);
             var novoFingerprint = JSON.stringify(novasLinhas);
             if (novoFingerprint !== fingerprintAtual) {
