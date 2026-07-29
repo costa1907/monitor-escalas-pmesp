@@ -210,16 +210,19 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
 // Colunas da grade, na ordem: (checkbox) | (ícone) | ID | Dia Sem. | Data |
 // Hora Ini. | Hora Tér. | Data Lim. Inscr. | AISP | CIA Resp. | Efetivo Tot. |
 // Inscritos | Jornada Delegada Ambiental
-// Algumas células da grade são renderizadas como campo de input (não texto puro),
-// então "textContent" fica vazio nelas — essa função tenta o input primeiro e
-// cai pro texto normal se não achar.
-function _textoCelula(td) {
-    if (!td) return "";
-    var inp = td.querySelector("input, textarea, select");
-    if (inp && typeof inp.value === "string" && inp.value.trim() !== "") return inp.value.trim();
-    return (td.textContent || "").trim();
-}
+// IMPORTANTE: como essa função é passada pro navegador via frame.evaluate(), o
+// Playwright manda só o código DELA (não de funções "vizinhas" no arquivo) — por
+// isso o helper de célula precisa estar declarado AQUI DENTRO, não fora.
 function _lerLinhasGrade() {
+    // Algumas células da grade são renderizadas como campo de input (não texto
+    // puro), então "textContent" fica vazio nelas — tenta o input primeiro e
+    // cai pro texto normal se não achar.
+    function _textoCelula(td) {
+        if (!td) return "";
+        var inp = td.querySelector("input, textarea, select");
+        if (inp && typeof inp.value === "string" && inp.value.trim() !== "") return inp.value.trim();
+        return (td.textContent || "").trim();
+    }
     var tabela = document.getElementById("Grid1ContainerTbl") ||
         document.querySelector('[id^="Grid1ContainerTbl"]') || document.querySelector(".GridCardTable");
     if (!tabela) return [];
