@@ -252,6 +252,7 @@ async function clicarProximaPaginaGX(frame) {
 // nova realmente carregou antes de começar a ler — sem isso, dá pra ler a grade
 // antiga por engano bem no instante da troca de AISP.
 async function pesquisarEscalas(page1, aisp, fingerprintAnteriorGlobal) {
+    console.log("🔎 Pesquisando " + _nomeDaAisp(aisp) + " (AISP " + aisp + ")...");
     var embFrame = page1.frameLocator('iframe[name="Embpage"]');
     var embFrameHandle = page1.frame({ name: "Embpage" });
     if (!embFrameHandle) throw new Error("Não achei o iframe Embpage — a estrutura da página pode ter mudado.");
@@ -298,6 +299,8 @@ async function pesquisarEscalas(page1, aisp, fingerprintAnteriorGlobal) {
     while (paginasLidas < MAX_PAGINAS) {
         paginasLidas++;
         resultados = resultados.concat(linhasAtuais);
+        console.log("   página " + paginasLidas + ": " + linhasAtuais.length + " escala(s)" +
+            (linhasAtuais.length > 0 ? " — ex: escala " + linhasAtuais[0].escalaId + " em " + linhasAtuais[0].data : ""));
 
         var temProxima = await embFrameHandle.evaluate(() => {
             var btn = document.getElementById("NEXT");
