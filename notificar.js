@@ -69,9 +69,9 @@ function agruparPorArea(novos) {
 }
 
 function formatarLinhaEscala(n) {
-    return "📅 " + n.data + "  🕐 " + n.horaIni + " x " + n.horaFim + "  🆔 " + n.escalaId +
-        "\n   ⏳ Limite p/ inscrição: " + (n.dataLimite || "?") +
-        "   👥 Vagas: " + (n.inscritos || "?") + "/" + (n.efetivoTotal || "?");
+    return "📅 " + n.data + "  🕐 " + n.horaIni + " x " + n.horaFim + "\n" +
+        "🆔 " + n.escalaId + "   👥 Vagas: " + (n.inscritos || "?") + "/" + (n.efetivoTotal || "?") + "\n" +
+        "⏳ Limite: " + (n.dataLimite || "?");
 }
 
 // O Telegram tem um limite físico de ~4096 caracteres por mensagem. Em vez de
@@ -89,7 +89,7 @@ function montarMensagensDoGrupo(grupo) {
         var tamanhoAtual = 0;
         var partes = 1;
         grupo.itens.forEach(function (n) {
-            var linha = formatarLinhaEscala(n) + "\n";
+            var linha = formatarLinhaEscala(n) + "\n\n";
             if (tamanhoAtual + linha.length > LIMITE_SEGURO_CARACTERES) { partes++; tamanhoAtual = 0; }
             tamanhoAtual += linha.length;
         });
@@ -102,7 +102,7 @@ function montarMensagensDoGrupo(grupo) {
     function fecharParte() {
         var cabecalho = "👀 <b>" + itensNaParte + " escala(s) nova(s) — " + grupo.nome + " (AISP " + grupo.aisp + ")" +
             (partesTotal > 1 ? " — parte " + parteAtual + "/" + partesTotal : "") + "</b>\n\n";
-        mensagens.push(cabecalho + linhasAtuais.join("\n") + rodape);
+        mensagens.push(cabecalho + linhasAtuais.join("\n\n") + rodape);
         parteAtual++;
         linhasAtuais = [];
         itensNaParte = 0;
@@ -111,13 +111,13 @@ function montarMensagensDoGrupo(grupo) {
     var tamanhoAcumulado = 0;
     grupo.itens.forEach(function (n) {
         var linha = formatarLinhaEscala(n);
-        if (tamanhoAcumulado + linha.length + 1 > LIMITE_SEGURO_CARACTERES && linhasAtuais.length > 0) {
+        if (tamanhoAcumulado + linha.length + 2 > LIMITE_SEGURO_CARACTERES && linhasAtuais.length > 0) {
             fecharParte();
             tamanhoAcumulado = 0;
         }
         linhasAtuais.push(linha);
         itensNaParte++;
-        tamanhoAcumulado += linha.length + 1;
+        tamanhoAcumulado += linha.length + 2;
     });
     if (linhasAtuais.length > 0) fecharParte();
 
@@ -135,7 +135,12 @@ function montarMensagensDoGrupo(grupo) {
 
     if (resultado.erro) {
         console.log("Notificando erro da checagem...");
-        await enviarTelegram("⚠️ O monitor de escalas deu erro: " + resultado.erro);
+        // Escapa <, > e & — mensagens de erro costumam trazer stack trace de JS
+        // (ex: "<anonymous>"), e isso quebra o parser de HTML do Telegram se
+        // mandado cru, fazendo a notificação de erro falhar silenciosamente.
+        var erroEscapado = String(resultado.erro)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        await enviarTelegram("⚠️ O monitor de escalas deu erro: " + erroEscapado);
         return;
     }
 
