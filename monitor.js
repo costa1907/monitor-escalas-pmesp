@@ -226,6 +226,19 @@ function _lerLinhasGrade() {
     return out;
 }
 
+// ── Lê o "Total de Registros: N" que a própria grade mostra no rodapé — serve
+// pra saber quantas escalas REALMENTE existem pra essa AISP, e comparar com o
+// que a paginação conseguiu capturar (detecta se o clique em "Próxima" falhou
+// silenciosamente e parou cedo demais).
+function _lerTotalRegistros() {
+    try {
+        var corpo = document.body ? document.body.innerText : "";
+        var m = corpo.match(/Total de Registros:\s*([\d.]+)/i);
+        if (!m) return null;
+        return parseInt(m[1].replace(/\./g, ""), 10);
+    } catch (e) { return null; }
+}
+
 // ── Clica no botão "Próxima página" via API interna do GeneXus (mesmo truque
 // do robô Tampermonkey — clique "visual" simples não dispara o evento certo
 // e a grade não muda de página de verdade, mesmo o botão continuando visível).
@@ -292,6 +305,11 @@ async function pesquisarEscalas(page1, aisp, fingerprintAnteriorGlobal) {
         fingerprintAtual = JSON.stringify(linhasAtuais);
     }
 
+    var totalEsperado = await embFrameHandle.evaluate(_lerTotalRegistros).catch(() => null);
+    if (totalEsperado !== null) {
+        console.log("   (a grade indica " + totalEsperado + " registro(s) no total pra essa AISP)");
+    }
+
     var resultados = [];
     var paginasLidas = 0;
     var MAX_PAGINAS = 30; // teto de segurança — uma AISP real não deveria chegar nem perto disso
@@ -300,33 +318,46 @@ async function pesquisarEscalas(page1, aisp, fingerprintAnteriorGlobal) {
         paginasLidas++;
         resultados = resultados.concat(linhasAtuais);
         console.log("   página " + paginasLidas + ": " + linhasAtuais.length + " escala(s)" +
-            (linhasAtuais.length > 0 ? " — ex: escala " + linhasAtuais[0].escalaId + " em " + linhasAtuais[0].data : ""));
+            (linhasAtuais.length > 0 ? " — ex: escala " + linhasAtuais[0].escalaId + " em " + linhasAtuais[0].data : "") +
+            (totalEsperado !== null ? " (capturado até agora: " + resultados.length + "/" + totalEsperado + ")" : ""));
+
+        // Se já capturamos tudo que a própria grade disse que existe, não precisa
+        // nem tentar clicar em "Próxima" de novo.
+        if (totalEsperado !== null && resultados.length >= totalEsperado) break;
 
         var temProxima = await embFrameHandle.evaluate(() => {
             var btn = document.getElementById("NEXT");
-            return !!(btn && btn.style.display !== "none" && btn.style.visibility !== "hidden");
+            return !!(btn && btn.style.display !== "none" && btn.style.visibility !== "hidden" && !btn.disabled);
         });
         if (!temProxima) break;
 
-        await clicarProximaPaginaGX(embFrameHandle);
-
-        // O postback do GeneXus pode demorar mais que um tempo fixo — em vez de
-        // esperar um valor fixo e arriscar ler a grade antes dela atualizar,
-        // fica checando a cada 300ms (até ~8s) se a grade realmente mudou.
+        // O clique em "Próxima" às vezes não "pega" na primeira (flakiness do
+        // postback do GeneXus) — em vez de desistir da AISP inteira no primeiro
+        // clique sem efeito, tenta de novo até 3 vezes antes de encerrar.
         var mudou = false;
-        for (var tentativa = 0; tentativa < 27; tentativa++) {
-            await page1.waitForTimeout(300);
-            var novasLinhas = await embFrameHandle.evaluate(_lerLinhasGrade);
-            var novoFingerprint = JSON.stringify(novasLinhas);
-            if (novoFingerprint !== fingerprintAtual) {
-                linhasAtuais = novasLinhas;
-                fingerprintAtual = novoFingerprint;
-                mudou = true;
-                break;
+        for (var tentativaClique = 0; tentativaClique < 3 && !mudou; tentativaClique++) {
+            await clicarProximaPaginaGX(embFrameHandle);
+
+            // O postback do GeneXus pode demorar mais que um tempo fixo — em vez de
+            // esperar um valor fixo e arriscar ler a grade antes dela atualizar,
+            // fica checando a cada 300ms (até ~8s) se a grade realmente mudou.
+            for (var tentativa = 0; tentativa < 27; tentativa++) {
+                await page1.waitForTimeout(300);
+                var novasLinhas = await embFrameHandle.evaluate(_lerLinhasGrade);
+                var novoFingerprint = JSON.stringify(novasLinhas);
+                if (novoFingerprint !== fingerprintAtual) {
+                    linhasAtuais = novasLinhas;
+                    fingerprintAtual = novoFingerprint;
+                    mudou = true;
+                    break;
+                }
+            }
+            if (!mudou && tentativaClique < 2) {
+                console.log("   ⚠️ Clique em 'Próxima' não teve efeito — tentando de novo (tentativa " + (tentativaClique + 2) + "/3)...");
             }
         }
         if (!mudou) {
-            console.log("⚠️ Página não mudou mesmo após esperar — encerrando paginação da AISP " + aisp + ".");
+            console.log("⚠️ Página não mudou mesmo após 3 tentativas de clique — encerrando paginação da AISP " + aisp + ".");
             break;
         }
     }
