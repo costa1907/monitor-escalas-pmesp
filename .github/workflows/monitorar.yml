@@ -46,13 +46,15 @@ jobs:
           PMESP_VPN_USUARIO: ${{ secrets.PMESP_VPN_USUARIO }}
           PMESP_VPN_SENHA: ${{ secrets.PMESP_VPN_SENHA }}
         run: |
-          # IMPORTANTE: mesmo com --background, o "sudo openconnect" mantinha a
-          # saída (stdout) conectada ao cano deste passo do GitHub Actions — então
-          # o passo NUNCA era considerado terminado (ficava preso pra sempre),
-          # mesmo já com a VPN conectada de verdade. Corrigido jogando a saída
-          # pra um arquivo de log e soltando o processo em segundo plano de
-          # verdade com "&" + "disown", sem o passo ficar esperando por ele.
-          echo "$PMESP_VPN_SENHA" | sudo openconnect \
+          # IMPORTANTE: mesmo redirecionando a saída e usando "&" + "disown", o
+          # "sudo" no Ubuntu usa PTY por padrão (use_pty), o que ainda prendia o
+          # passo. Corrigido de vez com "setsid" (desgruda completamente da sessão
+          # do terminal) e lendo a senha de um ARQUIVO temporário em vez de um pipe
+          # "ao vivo" (echo | ...), que também podia ficar pendurado.
+          echo "$PMESP_VPN_SENHA" | sudo tee /tmp/vpnpass > /dev/null
+          sudo chmod 600 /tmp/vpnpass
+
+          sudo setsid openconnect \
             --background \
             --pid-file=/tmp/openconnect.pid \
             --user="$PMESP_VPN_USUARIO" \
@@ -60,8 +62,10 @@ jobs:
             --passwd-on-stdin \
             --servercert pin-sha256:ccVM9Z6xyx607/QtUIoHLJcnq5m53m1crfttZ6Y6AhA= \
             https://extranet.policiamilitar.sp.gov.br/ \
-            > /tmp/openconnect.log 2>&1 &
+            < /tmp/vpnpass > /tmp/openconnect.log 2>&1 &
           disown
+          sleep 1
+          sudo rm -f /tmp/vpnpass
 
           echo "Aguardando o arquivo de PID da VPN aparecer..."
           ok_pid=""
