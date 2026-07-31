@@ -173,10 +173,13 @@ function montarMensagensDoGrupo(grupo) {
         resultadoPorArea
             .map(function (a) {
                 // "erro: true" = essa área falhou repetidamente e foi pulada nessa
-                // checagem (não é um "0" de verdade) — sinaliza diferente pra não
-                // confundir com uma área que realmente não tem escala disponível.
-                var icone = a.erro ? "🔴" : (a.total > 0 ? "🟢" : "⚪");
-                var sufixo = a.erro ? " (falhou nessa checagem, tentaremos de novo na próxima)" : "";
+                // checagem (não é um "0" de verdade). "semTempo: true" = nem chegou
+                // a ser checada porque o orçamento de tempo do run acabou antes —
+                // sinaliza cada caso diferente pra não confundir com uma área que
+                // realmente não tem escala disponível.
+                var icone = a.erro ? "🔴" : (a.semTempo ? "⏭️" : (a.total > 0 ? "🟢" : "⚪"));
+                var sufixo = a.erro ? " (falhou nessa checagem, tentaremos de novo na próxima)"
+                    : (a.semTempo ? " (não deu tempo nessa checagem, será checada na próxima)" : "");
                 return icone + " " + a.nome + " (" + a.aisp + "): " + a.total + sufixo;
             })
             .join("\n") +
