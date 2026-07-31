@@ -19,7 +19,7 @@ concurrency:
 jobs:
   checar:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 29
     steps:
       - name: Baixar código do repositório
         uses: actions/checkout@v4
