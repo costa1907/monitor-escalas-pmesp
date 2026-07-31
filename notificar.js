@@ -59,13 +59,25 @@ async function enviarTelegram(texto) {
 
 // ── Agrupa as escalas novas por AISP, pra mandar TODAS as escalas de uma
 // mesma área numa única mensagem (em vez de 1 mensagem por escala).
+//
+// ⚠️ CORREÇÃO 31/07/2026 (bug real, confirmado pelo usuário vendo os avisos
+// chegarem "de trás pra frente" no Telegram): usar um objeto comum ({}) aqui
+// pra agrupar por AISP parecia inofensivo, mas o JavaScript tem uma regra
+// própria pra objetos comuns — quando as CHAVES são números (mesmo que como
+// string, tipo "85760"), ele reordena essas chaves em ordem NUMÉRICA
+// CRESCENTE automaticamente, ignorando totalmente a ordem em que foram
+// inseridas. Como as AISPs vão de 85760 (25 de Março, a 1ª da lista) até
+// 85741 (Feira da Madrugada, a última), essa reordenação automática INVERTIA
+// a sequência de envio: a 1ª área da lista (85760, maior número) virava a
+// ÚLTIMA mensagem enviada. Corrigido usando um Map em vez de objeto comum —
+// Map SEMPRE preserva a ordem de inserção, não importa o tipo da chave.
 function agruparPorArea(novos) {
-    var porAisp = {};
+    var porAisp = new Map();
     novos.forEach(function (n) {
-        if (!porAisp[n.aisp]) porAisp[n.aisp] = { nome: n.nome, aisp: n.aisp, itens: [] };
-        porAisp[n.aisp].itens.push(n);
+        if (!porAisp.has(n.aisp)) porAisp.set(n.aisp, { nome: n.nome, aisp: n.aisp, itens: [] });
+        porAisp.get(n.aisp).itens.push(n);
     });
-    return Object.keys(porAisp).map(function (k) { return porAisp[k]; });
+    return Array.from(porAisp.values());
 }
 
 function formatarLinhaEscala(n) {
