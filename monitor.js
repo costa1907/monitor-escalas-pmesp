@@ -225,16 +225,26 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
 // por AISP), pedir pra checar mesmo assim custava 3s inteiros de timeout
 // procurando um checkbox que não existe mais, à toa, em TODA busca — um dos
 // maiores desperdícios de tempo do run inteiro (~50s no total num run de 18 AISPs).
-async function abrirTelaPesquisaDelegada(page1, verificarApto) {
+// "recarregarAntes": IMPORTANTE (bug real corrigido) — reaproveitar o mesmo DOM
+// do popup e só reclicar no menu em cascata (SIRH → Escala → Inscrever PM)
+// funcionava certinho da 1ª vez, mas passou a falhar de forma DETERMINÍSTICA
+// (100% das tentativas) a partir da 2ª AISP em runs reais: o clique "parecia"
+// funcionar (nenhum erro nos hovers/clique), mas o campo de busca nunca mais
+// ficava visível depois disso — sinal de que o menu em cascata fica com algum
+// estado interno "grudado" depois do primeiro uso (comum em menus legados
+// baseados em onmouseover). Recarregar o popup inteiro antes de renavegar
+// garante que o menu sempre começa do zero, do jeito que só funcionou até
+// agora pra 1ª AISP do run.
+async function abrirTelaPesquisaDelegada(page1, verificarApto, recarregarAntes) {
+    if (recarregarAntes) {
+        await page1.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
+        await page1.waitForTimeout(1000);
+        await page1.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
+    }
+
     // Menu em cascata: passa o mouse em "SIRH" → abre submenu "Escala" → passa o
     // mouse nele → abre o submenu final com "Inscrever PM na Escala Ativ Delegada".
     // Precisa do hover em cada nível (não é link direto, é JS de onmouseover).
-    // REVERTIDO: tentei reduzir essas pausas (500→300ms, networkidle 3000→1200ms)
-    // numa passada de performance, e isso reabriu a mesma classe de bug — a busca
-    // passou a ler um iframe que ainda não tinha carregado de verdade (grade sempre
-    // vazia, "Total de Registros" nem aparecia mais no log). Essa janela de tempo
-    // entre clicar no menu e a tela nova estar pronta de fato é sensível demais pra
-    // cortar; voltando aos valores testados e comprovadamente estáveis.
     await page1.locator("td.ThemeClassicMainFolderText", { hasText: "SIRH" }).hover({ timeout: 15000 });
     await page1.waitForTimeout(500);
     await page1.getByText("Escala", { exact: true }).first().hover({ timeout: 10000 });
@@ -405,8 +415,9 @@ async function pesquisarEscalas(page1, aisp) {
     var embFrameHandle = null;
     var ultimoErroAbertura = null;
     for (var tentativaAbertura = 1; tentativaAbertura <= 3; tentativaAbertura++) {
+        var ehAberturaAbsolutamentePrimeira = (aisp === AISPS_MONITORADAS[0] && tentativaAbertura === 1);
         try {
-            await abrirTelaPesquisaDelegada(page1, aisp === AISPS_MONITORADAS[0] && tentativaAbertura === 1);
+            await abrirTelaPesquisaDelegada(page1, ehAberturaAbsolutamentePrimeira, !ehAberturaAbsolutamentePrimeira);
             await embFrame.locator("#vIDFAGPGEOSST").waitFor({ state: "visible", timeout: 20000 });
             embFrameHandle = page1.frame({ name: "Embpage" });
             if (!embFrameHandle) throw new Error("Não achei o iframe Embpage — a estrutura da página pode ter mudado.");
