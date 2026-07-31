@@ -69,9 +69,12 @@ function agruparPorArea(novos) {
 }
 
 function formatarLinhaEscala(n) {
-    return "📅 " + n.data + "  🕐 " + n.horaIni + " x " + n.horaFim + "\n" +
-        "🆔 " + n.escalaId + "   👥 Vagas: " + (n.inscritos || "?") + "/" + (n.efetivoTotal || "?") + "\n" +
-        "⏳ Limite: " + (n.dataLimite || "?");
+    // Ordem confirmada pelo usuário direto no site: "Efetivo Tot." é o total de
+    // vagas disponíveis pra marcar, e "Inscritos" é quantas já foram preenchidas
+    // — antes estava invertido na mensagem.
+    return "📅 " + n.data + "   🆔 " + n.escalaId + "   🕐 " + n.horaIni + " x " + n.horaFim + "\n" +
+        "👥 Total de Vagas: " + (n.efetivoTotal || "?") + " | Inscritos: " + (n.inscritos || "?") + "\n" +
+        "⏳ Limite Inscrição: " + (n.dataLimite || "?");
 }
 
 // O Telegram tem um limite físico de ~4096 caracteres por mensagem. Em vez de
