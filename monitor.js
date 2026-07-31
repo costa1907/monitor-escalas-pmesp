@@ -207,57 +207,40 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
 }
 
 // ── Lê as linhas da grade atual (dentro do frame Embpage) ──────────────────
-// Colunas da grade, na ordem: (checkbox) | (ícone) | ID | Dia Sem. | Data |
-// Hora Ini. | Hora Tér. | Data Lim. Inscr. | AISP | CIA Resp. | Efetivo Tot. |
-// Inscritos | Jornada Delegada Ambiental
+// TODOS os campos agora são lidos por ID FIXO do GeneXus (confirmado direto no
+// HTML real da página, uma linha completa que o usuário copiou do DevTools) —
+// nada mais depende de posição de coluna, que já causou vários bugs (célula
+// virando input em vez de texto puro, índice errado, etc). Os IDs de cada
+// linha terminam em "_NNNN" (0001, 0002, ...), então busca por prefixo.
+//   span_vESCOPRIDFAUX_   → ID da escala
+//   span_vGRIDDATESC_     → Data
+//   span_vGRIDHORINI_     → Hora Início
+//   span_vGRIDHORTER_     → Hora Término
+//   span_vESCOPRDATFIMISC_→ Data Limite de Inscrição
+//   span_vESCOPRQTDTOT_   → Efetivo Total (vagas)
+//   span_vGRIDINSTOT_     → Inscritos
 // IMPORTANTE: como essa função é passada pro navegador via frame.evaluate(), o
 // Playwright manda só o código DELA (não de funções "vizinhas" no arquivo) — por
-// isso o helper de célula precisa estar declarado AQUI DENTRO, não fora.
+// isso qualquer helper precisa estar declarado AQUI DENTRO, não fora.
 function _lerLinhasGrade() {
-    // Algumas células da grade são renderizadas como campo de input (não texto
-    // puro), então "textContent" fica vazio nelas — tenta o input primeiro e
-    // cai pro texto normal se não achar.
-    function _textoCelula(td) {
-        if (!td) return "";
-        var inp = td.querySelector("input, textarea, select");
-        if (inp && typeof inp.value === "string" && inp.value.trim() !== "") return inp.value.trim();
-        return (td.textContent || "").trim();
+    function porPrefixo(linha, prefixo) {
+        var el = linha.querySelector('[id^="' + prefixo + '"]');
+        return el ? (el.textContent || "").trim() : "";
     }
-    var tabela = document.getElementById("Grid1ContainerTbl") ||
-        document.querySelector('[id^="Grid1ContainerTbl"]') || document.querySelector(".GridCardTable");
-    if (!tabela) return [];
-    var linhas = tabela.querySelectorAll('tr[id^="Grid1ContainerRow"], tr.GridCardRow, tr.GridRow');
+    var linhas = document.querySelectorAll('tr[id^="Grid1ContainerRow"]');
     var out = [];
     linhas.forEach(function (linha) {
-        var colunas = linha.querySelectorAll("td");
-        if (colunas.length < 12) return;
+        var escalaId = porPrefixo(linha, "span_vESCOPRIDFAUX_");
+        if (!escalaId) return; // linha "fantasma"/sem dados válidos — ignora
         out.push({
-            escalaId: _textoCelula(colunas[2]),
-            data: _textoCelula(colunas[4]),
-            horaIni: _textoCelula(colunas[5]),
-            horaFim: _textoCelula(colunas[6]),
-            dataLimite: _textoCelula(colunas[7]),
-            efetivoTotal: _textoCelula(colunas[10]),
-            inscritos: _textoCelula(colunas[11])
+            escalaId: escalaId,
+            data: porPrefixo(linha, "span_vGRIDDATESC_"),
+            horaIni: porPrefixo(linha, "span_vGRIDHORINI_"),
+            horaFim: porPrefixo(linha, "span_vGRIDHORTER_"),
+            dataLimite: porPrefixo(linha, "span_vESCOPRDATFIMISC_"),
+            efetivoTotal: porPrefixo(linha, "span_vESCOPRQTDTOT_"),
+            inscritos: porPrefixo(linha, "span_vGRIDINSTOT_")
         });
-    });
-    return out;
-}
-
-// ── Diagnóstico: dump bruto de todas as colunas da 1ª linha da grade, usado só
-// se algum campo esperado (ex: Efetivo Total) continuar vindo vazio — ajuda a
-// achar o índice certo da coluna sem precisar de mais uma rodada de tentativa.
-function _debugColunasDaPrimeiraLinha() {
-    var tabela = document.getElementById("Grid1ContainerTbl") ||
-        document.querySelector('[id^="Grid1ContainerTbl"]') || document.querySelector(".GridCardTable");
-    if (!tabela) return null;
-    var linha = tabela.querySelector('tr[id^="Grid1ContainerRow"], tr.GridCardRow, tr.GridRow');
-    if (!linha) return null;
-    var colunas = linha.querySelectorAll("td");
-    var out = [];
-    colunas.forEach(function (td, i) {
-        var inp = td.querySelector("input, textarea, select");
-        out.push(i + ": \"" + (td.textContent || "").trim() + "\"" + (inp ? " [input value=\"" + (inp.value || "") + "\"]" : ""));
     });
     return out;
 }
@@ -284,9 +267,42 @@ async function clicarProximaPaginaGX(frame) {
         if (!btn) return false;
         try {
             if (typeof btn.focus === "function") btn.focus();
-            var ctx = (typeof gx !== "undefined" && gx.O) ? (gx.O.CmpContext || "") : "";
-            if (typeof gx !== "undefined" && gx.evt && typeof gx.evt.execEvt === "function") {
-                try { gx.evt.execEvt(ctx + "ENEXT.CLICK.", btn); return true; } catch (e) {}
+            // Reproduz EXATAMENTE o onclick real do botão (confirmado no HTML da
+            // página: onclick="if( gx.evt.jsEvent(this)) {gx.evt.execEvt('ENEXT.CLICK.',this);
+            // return false;} else return false;") — sem nenhum prefixo de contexto
+            // colado no nome do evento, que era uma suposição errada da versão anterior
+            // e podia fazer o clique "não fazer nada" silenciosamente.
+            if (typeof gx !== "undefined" && gx.evt && typeof gx.evt.jsEvent === "function" && typeof gx.evt.execEvt === "function") {
+                if (gx.evt.jsEvent(btn)) {
+                    gx.evt.execEvt("ENEXT.CLICK.", btn);
+                    return true;
+                }
+                return false;
+            }
+            if (typeof btn.onclick === "function") { btn.onclick(); return true; }
+            btn.click();
+            return true;
+        } catch (e) { return false; }
+    });
+}
+
+// ── Clica no botão "Procurar" via API interna do GeneXus — mesma ideia do botão
+// "Próxima": reproduz EXATAMENTE o onclick real (confirmado no HTML da página:
+// id="IMAGE1", onclick="if( gx.evt.jsEvent(this)) {gx.evt.execEvt('E\'PROCURAR\'.',this);
+// return false;} else return false;"), em vez de depender de um clique "simulado"
+// via seletor de texto/role, que é mais frágil.
+async function clicarProcurarGX(frame) {
+    return frame.evaluate(() => {
+        var btn = document.getElementById("IMAGE1");
+        if (!btn) return false;
+        try {
+            if (typeof btn.focus === "function") btn.focus();
+            if (typeof gx !== "undefined" && gx.evt && typeof gx.evt.jsEvent === "function" && typeof gx.evt.execEvt === "function") {
+                if (gx.evt.jsEvent(btn)) {
+                    gx.evt.execEvt("E'PROCURAR'.", btn);
+                    return true;
+                }
+                return false;
             }
             if (typeof btn.onclick === "function") { btn.onclick(); return true; }
             btn.click();
@@ -325,7 +341,12 @@ async function pesquisarEscalas(page1, aisp) {
     // (DELAY_PRE_PESQUISA_MS) — dá tempo do GeneXus assimilar os campos preenchidos
     // via injeção antes do clique, evitando pesquisar com o formulário "pela metade".
     await page1.waitForTimeout(150);
-    await embFrame.getByRole("button", { name: "Procurar" }).click({ timeout: 15000 });
+    var clicouProcurar = await clicarProcurarGX(embFrameHandle);
+    if (!clicouProcurar) {
+        // fallback de segurança: clique "real" via Playwright, caso o botão IMAGE1
+        // não exista por algum motivo (ex: id mudou numa atualização do site)
+        await embFrame.getByRole("button", { name: "Procurar" }).click({ timeout: 15000 }).catch(() => {});
+    }
 
     // Espera a busca desta AISP carregar de verdade: fica checando a cada 300ms
     // (até ~12s) se a grade mudou em relação ao estado de ANTES de clicar em
@@ -404,7 +425,7 @@ async function pesquisarEscalas(page1, aisp) {
             break;
         }
     }
-    return { linhas: resultados };
+    return { linhas: resultados, totalEsperado: totalEsperado };
 }
 
 (async function main() {
@@ -426,21 +447,23 @@ async function pesquisarEscalas(page1, aisp) {
         page1 = await fazerLoginEAbrirDelegada(context, tirarScreenshotErro);
 
         var resultadoPorArea = []; // { aisp, nome, total } — TODAS as áreas verificadas, mesmo com 0
-        var jaMostrouDebugColunas = false;
+        var MAX_TENTATIVAS_AISP = 3; // se a paginação ficar devendo escalas (comparado ao Total de
+        // Registros da própria grade), refaz a busca dessa AISP do zero em vez de aceitar parcial
         for (const aisp of AISPS_MONITORADAS) {
-            var resultadoBusca = await pesquisarEscalas(page1, aisp);
-            var linhas = resultadoBusca.linhas;
-            if (!jaMostrouDebugColunas && linhas.length > 0 && !linhas[0].efetivoTotal) {
-                jaMostrouDebugColunas = true;
-                try {
-                    var embFrameHandleDebug = page1.frame({ name: "Embpage" });
-                    var dump = await embFrameHandleDebug.evaluate(_debugColunasDaPrimeiraLinha);
-                    if (dump) {
-                        console.log("🔬 DEBUG — colunas cruas da 1ª linha (Efetivo Total veio vazio):");
-                        dump.forEach(function (l) { console.log("     " + l); });
-                    }
-                } catch (e) {}
+            var resultadoBusca;
+            for (var tentativaAisp = 1; tentativaAisp <= MAX_TENTATIVAS_AISP; tentativaAisp++) {
+                resultadoBusca = await pesquisarEscalas(page1, aisp);
+                var completo = resultadoBusca.totalEsperado === null || resultadoBusca.linhas.length >= resultadoBusca.totalEsperado;
+                if (completo) break;
+                if (tentativaAisp < MAX_TENTATIVAS_AISP) {
+                    console.log("⚠️ Só capturei " + resultadoBusca.linhas.length + "/" + resultadoBusca.totalEsperado +
+                        " escalas da AISP " + aisp + " — refazendo a busca dessa AISP do zero (tentativa " + (tentativaAisp + 1) + "/" + MAX_TENTATIVAS_AISP + ")...");
+                } else {
+                    console.log("⚠️ Mesmo depois de " + MAX_TENTATIVAS_AISP + " tentativas, só consegui " + resultadoBusca.linhas.length + "/" + resultadoBusca.totalEsperado +
+                        " escalas da AISP " + aisp + " — seguindo com o que tem pra não travar o resto da checagem.");
+                }
             }
+            var linhas = resultadoBusca.linhas;
             console.log("AISP " + aisp + " (" + _nomeDaAisp(aisp) + "): " + linhas.length + " linha(s) na grade.");
             resultadoPorArea.push({ aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length });
             for (const l of linhas) {
