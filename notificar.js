@@ -84,7 +84,12 @@ function formatarLinhaEscala(n) {
     // Ordem confirmada pelo usuário direto no site: "Efetivo Tot." é o total de
     // vagas disponíveis pra marcar, e "Inscritos" é quantas já foram preenchidas
     // — antes estava invertido na mensagem.
-    return "📅 " + n.data + "   🆔 " + n.escalaId + "   🕐 " + n.horaIni + " x " + n.horaFim + "\n" +
+    //
+    // CORREÇÃO 31/07/2026: a 1ª linha (data/ID/horário) usava 3 espaços entre
+    // cada campo — em telas de celular isso estourava a largura e quebrava pra
+    // uma 2ª linha visual, ficando feio. Reduzido pra 1 espaço só, que já dá
+    // separação visual suficiente entre os emojis e cabe inteiro numa linha.
+    return "📅 " + n.data + " 🆔 " + n.escalaId + " 🕐 " + n.horaIni + " x " + n.horaFim + "\n" +
         "👥 Total de Vagas: " + (n.efetivoTotal || "?") + " | Inscritos: " + (n.inscritos || "?") + "\n" +
         "⏳ Limite Inscrição: " + (n.dataLimite || "?");
 }
