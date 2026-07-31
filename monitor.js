@@ -377,31 +377,49 @@ async function clicarProcurarGX(frame) {
 async function pesquisarEscalas(page1, aisp) {
     console.log("🔎 Pesquisando " + _nomeDaAisp(aisp) + " (AISP " + aisp + ")...");
 
-    // Reabre a tela de pesquisa do zero pra CADA AISP (não só na primeira vez do
-    // run) — corrige o bug em que a paginação ficava "grudada" na posição da AISP
-    // anterior, fazendo a grade vir vazia mesmo com resultado de verdade disponível.
-    // Só verifica a declaração de "apto" na 1ª AISP do run (ela não aparece de novo
-    // depois disso, então checar nas outras 17 só desperdiçava ~3s cada à toa).
-    await abrirTelaPesquisaDelegada(page1, aisp === AISPS_MONITORADAS[0]);
-
     var embFrame = page1.frameLocator('iframe[name="Embpage"]');
 
     var dataIni = formatarDataBR(hoje());
     var dataFim = formatarDataBR(new Date(hoje().getTime() + JANELA_DIAS * 24 * 60 * 60 * 1000));
 
+    // Reabre a tela de pesquisa do zero pra CADA AISP (não só na primeira vez do
+    // run) — corrige o bug em que a paginação ficava "grudada" na posição da AISP
+    // anterior, fazendo a grade vir vazia mesmo com resultado de verdade disponível.
+    // Só verifica a declaração de "apto" na 1ª AISP do run (ela não aparece de novo
+    // depois disso, então checar nas outras 17 só desperdiçava ~3s cada à toa).
+    //
     // IMPORTANTE (bug real corrigido): pegar a referência bruta do frame (via
     // page1.frame({name:...})) ANTES do iframe recarregado terminar de assentar é
     // arriscado — se o postback ainda estiver trocando o conteúdo do iframe nesse
     // instante, essa referência pode ficar presa numa versão velha/prestes a ser
     // destruída, e toda leitura feita nela depois fica "morta" pra sempre (grade
-    // sempre vazia, sem nenhum erro visível). Por isso a ordem agora é: primeiro
-    // espera o campo aparecer usando o FRAME LOCATOR (que sempre resolve pro iframe
-    // ATUAL, robusto a troca/reload) — só DEPOIS disso confirmado é que pegamos a
+    // sempre vazia, sem nenhum erro visível). Por isso a ordem é: primeiro espera o
+    // campo aparecer usando o FRAME LOCATOR (que sempre resolve pro iframe ATUAL,
+    // robusto a troca/reload) — só DEPOIS disso confirmado é que pegamos a
     // referência bruta do frame pra usar com .evaluate() no resto da função.
-    await embFrame.locator("#vIDFAGPGEOSST").waitFor({ state: "visible", timeout: 20000 });
-
-    var embFrameHandle = page1.frame({ name: "Embpage" });
-    if (!embFrameHandle) throw new Error("Não achei o iframe Embpage — a estrutura da página pode ter mudado.");
+    //
+    // Essa espera às vezes estoura por lentidão pontual do site (não é bug de
+    // lógica) — em vez de derrubar a checagem INTEIRA na primeira vez que isso
+    // acontece com qualquer AISP, tenta reabrir a tela do zero até 3 vezes antes
+    // de desistir de verdade dessa AISP específica.
+    var embFrameHandle = null;
+    var ultimoErroAbertura = null;
+    for (var tentativaAbertura = 1; tentativaAbertura <= 3; tentativaAbertura++) {
+        try {
+            await abrirTelaPesquisaDelegada(page1, aisp === AISPS_MONITORADAS[0] && tentativaAbertura === 1);
+            await embFrame.locator("#vIDFAGPGEOSST").waitFor({ state: "visible", timeout: 20000 });
+            embFrameHandle = page1.frame({ name: "Embpage" });
+            if (!embFrameHandle) throw new Error("Não achei o iframe Embpage — a estrutura da página pode ter mudado.");
+            ultimoErroAbertura = null;
+            break;
+        } catch (e) {
+            ultimoErroAbertura = e;
+            console.log("   ⚠️ Não consegui abrir a tela de pesquisa pra AISP " + aisp + " (tentativa " + tentativaAbertura + "/3): " + e.message);
+        }
+    }
+    if (!embFrameHandle) {
+        throw ultimoErroAbertura || new Error("Não consegui abrir a tela de pesquisa pra AISP " + aisp + " depois de 3 tentativas.");
+    }
 
     // Mesmo com o campo já visível, a API interna do GeneXus (window.gx / gx.O)
     // pode levar um instante a mais pra ficar pronta — espera de verdade em vez de
@@ -586,9 +604,23 @@ async function pesquisarEscalas(page1, aisp) {
         // Registros da própria grade), refaz a busca dessa AISP do zero em vez de aceitar parcial
         for (const aisp of AISPS_MONITORADAS) {
             var ehPrimeiraAispDoRun = (aisp === AISPS_MONITORADAS[0]);
-            var resultadoBusca;
+            var resultadoBusca = null;
+            var ultimoErroAisp = null;
             for (var tentativaAisp = 1; tentativaAisp <= MAX_TENTATIVAS_AISP; tentativaAisp++) {
-                resultadoBusca = await pesquisarEscalas(page1, aisp);
+                // IMPORTANTE (bug real corrigido): pesquisarEscalas pode lançar exceção
+                // (ex: timeout esperando o campo de AISP aparecer, por lentidão pontual
+                // do site) — antes isso derrubava a checagem INTEIRA e perdia o progresso
+                // de todas as outras AISPs. Agora captura aqui: se falhar, tenta de novo
+                // (mesmas MAX_TENTATIVAS_AISP tentativas já usadas pra paginação incompleta)
+                // e, se mesmo assim continuar falhando, pula só essa AISP e segue o run.
+                try {
+                    resultadoBusca = await pesquisarEscalas(page1, aisp);
+                } catch (e) {
+                    ultimoErroAisp = e;
+                    console.log("   ❌ Falha ao pesquisar AISP " + aisp + " (tentativa " + tentativaAisp + "/" + MAX_TENTATIVAS_AISP + "): " + e.message);
+                    resultadoBusca = null;
+                    continue;
+                }
                 var completo = resultadoBusca.totalEsperado === null || resultadoBusca.linhas.length >= resultadoBusca.totalEsperado;
                 // Segurança extra só pra 1ª AISP do run: é a única que roda logo depois
                 // do login (às vezes mais lento/instável), janela em que já vimos um bug
@@ -608,6 +640,14 @@ async function pesquisarEscalas(page1, aisp) {
                         " escalas da AISP " + aisp + " — seguindo com o que tem pra não travar o resto da checagem.");
                 }
             }
+
+            if (!resultadoBusca) {
+                console.log("⚠️ Pulando AISP " + aisp + " (" + _nomeDaAisp(aisp) + ") nessa checagem — falhou repetidamente" +
+                    (ultimoErroAisp ? (": " + ultimoErroAisp.message) : "") + ". Seguindo pras próximas AISPs.");
+                resultadoPorArea.push({ aisp: aisp, nome: _nomeDaAisp(aisp), total: 0, erro: true });
+                continue;
+            }
+
             var linhas = resultadoBusca.linhas;
             console.log("AISP " + aisp + " (" + _nomeDaAisp(aisp) + "): " + linhas.length + " linha(s) na grade.");
             resultadoPorArea.push({ aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length });
