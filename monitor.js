@@ -385,28 +385,33 @@ async function pesquisarEscalas(page1, aisp) {
     await abrirTelaPesquisaDelegada(page1, aisp === AISPS_MONITORADAS[0]);
 
     var embFrame = page1.frameLocator('iframe[name="Embpage"]');
-    var embFrameHandle = page1.frame({ name: "Embpage" });
-    if (!embFrameHandle) throw new Error("Não achei o iframe Embpage — a estrutura da página pode ter mudado.");
 
     var dataIni = formatarDataBR(hoje());
     var dataFim = formatarDataBR(new Date(hoje().getTime() + JANELA_DIAS * 24 * 60 * 60 * 1000));
 
-    // IMPORTANTE (bug real corrigido): preencherCampoGX depende da API interna do
-    // GeneXus (window.gx / gx.O) já estar pronta dentro do iframe Embpage. Como a
-    // tela agora é reaberta do zero a cada AISP, existe uma janela real em que o
-    // iframe recém-carregado ainda não terminou de inicializar essa API — e isso
-    // fica bem mais provável logo depois de um login mais lento (aconteceu num run
-    // real: a 1ª AISP saiu com "0 registros" porque o preenchimento de AISP/datas
-    // falhou silenciosamente e a busca rodou com o formulário errado/vazio). Em vez
-    // de confiar que 1500ms + networkidle sempre é tempo suficiente, espera de
-    // verdade a API do GeneXus responder antes de preencher qualquer campo.
+    // IMPORTANTE (bug real corrigido): pegar a referência bruta do frame (via
+    // page1.frame({name:...})) ANTES do iframe recarregado terminar de assentar é
+    // arriscado — se o postback ainda estiver trocando o conteúdo do iframe nesse
+    // instante, essa referência pode ficar presa numa versão velha/prestes a ser
+    // destruída, e toda leitura feita nela depois fica "morta" pra sempre (grade
+    // sempre vazia, sem nenhum erro visível). Por isso a ordem agora é: primeiro
+    // espera o campo aparecer usando o FRAME LOCATOR (que sempre resolve pro iframe
+    // ATUAL, robusto a troca/reload) — só DEPOIS disso confirmado é que pegamos a
+    // referência bruta do frame pra usar com .evaluate() no resto da função.
+    await embFrame.locator("#vIDFAGPGEOSST").waitFor({ state: "visible", timeout: 20000 });
+
+    var embFrameHandle = page1.frame({ name: "Embpage" });
+    if (!embFrameHandle) throw new Error("Não achei o iframe Embpage — a estrutura da página pode ter mudado.");
+
+    // Mesmo com o campo já visível, a API interna do GeneXus (window.gx / gx.O)
+    // pode levar um instante a mais pra ficar pronta — espera de verdade em vez de
+    // confiar em tempo fixo, já que preencherCampoGX depende dela.
     await embFrameHandle.waitForFunction(
         () => typeof gx !== "undefined" && !!gx.O && typeof gx.O.setVariable === "function" || (typeof gx !== "undefined" && typeof gx.setVar === "function"),
         { timeout: 10000 }
     ).catch(() => {
         console.log("   ⚠️ API interna do GeneXus (gx.O) não respondeu dentro do prazo — seguindo mesmo assim.");
     });
-    await embFrame.locator("#vIDFAGPGEOSST").waitFor({ state: "visible", timeout: 10000 }).catch(() => {});
 
     // Retrato da grade ANTES de mexer em qualquer coisa — essa é a base de
     // comparação usada logo abaixo, pra garantir que detectamos uma mudança real.
@@ -542,7 +547,20 @@ async function pesquisarEscalas(page1, aisp) {
             break;
         }
     }
-    return { linhas: resultados, totalEsperado: totalEsperado };
+    // Proteção extra contra página duplicada (visto num run real: 90 linhas capturadas
+    // pra uma AISP que a própria grade dizia ter só 82 — uma página repetiu conteúdo
+    // de outra). Deduplica por ID da escala antes de devolver o resultado final.
+    var vistosNestaAisp = new Set();
+    var resultadosSemDuplicata = resultados.filter(function (l) {
+        if (vistosNestaAisp.has(l.escalaId)) return false;
+        vistosNestaAisp.add(l.escalaId);
+        return true;
+    });
+    if (resultadosSemDuplicata.length !== resultados.length) {
+        console.log("   ⚠️ Removidas " + (resultados.length - resultadosSemDuplicata.length) + " escala(s) duplicada(s) (provável página repetida) da AISP " + aisp + ".");
+    }
+
+    return { linhas: resultadosSemDuplicata, totalEsperado: totalEsperado };
 }
 
 (async function main() {
