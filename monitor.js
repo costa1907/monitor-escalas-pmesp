@@ -23,8 +23,16 @@
 //
 // ⚠️ Isso é a MELHOR aposta com base no que foi gravado manualmente uma vez —
 // mas automação contra um sistema legado GeneXus é frágil. Se der erro, o
-// workflow salva uma screenshot (erro.png) como artefato pra gente debugar
-// junto olhando exatamente onde travou.
+// workflow salva screenshots (erro*.png, uma por falha) como artefato pra
+// gente debugar junto olhando exatamente onde travou.
+//
+// ⚠️ CORREÇÃO 31/07/2026 (confirmada em log de execução real): a 1ª AISP do
+// run sempre abria a tela de pesquisa certinho, mas voltar pra essa tela pra
+// checar a 2ª AISP em diante (reaproveitando a mesma popup) falhava 100% das
+// vezes, travando o run inteiro até ser cancelado por timeout sem notificar
+// nada. Agora CADA AISP faz login do zero, numa popup só dela — mais lento,
+// mas é a única sequência que já se provou 100% confiável num run real. Ver
+// pesquisarEscalas() e o "orçamento de tempo" em main() pra mais detalhes.
 // ─────────────────────────────────────────────────────────────────────────
 
 const { chromium } = require("playwright");
@@ -199,9 +207,10 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
         await page1.waitForLoadState("domcontentloaded");
         await page1.waitForTimeout(1200);
 
-        // Não abre a tela de pesquisa aqui — cada chamada de pesquisarEscalas() já
-        // abre (de novo) do zero pra cada AISP, então abrir aqui só duplicaria a
-        // navegação à toa na primeira AISP do run.
+        // A popup (page1) já é totalmente independente da página do portal a
+        // partir daqui — fecha a página do portal pra não acumular abas à toa
+        // (essa função agora roda uma vez POR AISP, não uma vez só por run).
+        await page.close().catch(() => {});
 
         return page1;
     } catch (err) {
@@ -210,38 +219,24 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
     }
 }
 
-// ── Navega (de novo) até a tela de pesquisa "Inscrever PM na Escala Ativ
-// Delegada", recarregando o iframe Embpage do zero. IMPORTANTE (bug real
-// corrigido): reaproveitar o MESMO iframe entre buscas de AISPs diferentes
-// deixava a paginação "grudada" na posição da busca anterior — a 1ª AISP
-// terminava na página 9 (a última), e ao pesquisar a 2ª AISP no mesmo iframe
-// a grade tentava mostrar essa mesma "página 9", que não existe no resultado
-// novo (menor), voltando vazia — e por isso "Próxima" também não tinha efeito
-// (já não tinha pra onde avançar a partir de uma página inválida). Reabrir a
-// tela do zero pra CADA AISP garante que a grade e a paginação sempre começam
-// limpas, do jeito que aconteceu certinho na primeiríssima busca do run.
-// "verificarApto": só precisa ser true na 1ª vez que a tela abre depois do
-// login — essa declaração some depois disso. Nas outras 17 reaberturas (uma
-// por AISP), pedir pra checar mesmo assim custava 3s inteiros de timeout
-// procurando um checkbox que não existe mais, à toa, em TODA busca — um dos
-// maiores desperdícios de tempo do run inteiro (~50s no total num run de 18 AISPs).
-// "recarregarAntes": IMPORTANTE (bug real corrigido) — reaproveitar o mesmo DOM
-// do popup e só reclicar no menu em cascata (SIRH → Escala → Inscrever PM)
-// funcionava certinho da 1ª vez, mas passou a falhar de forma DETERMINÍSTICA
-// (100% das tentativas) a partir da 2ª AISP em runs reais: o clique "parecia"
-// funcionar (nenhum erro nos hovers/clique), mas o campo de busca nunca mais
-// ficava visível depois disso — sinal de que o menu em cascata fica com algum
-// estado interno "grudado" depois do primeiro uso (comum em menus legados
-// baseados em onmouseover). Recarregar o popup inteiro antes de renavegar
-// garante que o menu sempre começa do zero, do jeito que só funcionou até
-// agora pra 1ª AISP do run.
-async function abrirTelaPesquisaDelegada(page1, verificarApto, recarregarAntes) {
-    if (recarregarAntes) {
-        await page1.reload({ waitUntil: "domcontentloaded", timeout: 30000 });
-        await page1.waitForTimeout(1000);
-        await page1.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
-    }
-
+// ── Navega até a tela de pesquisa "Inscrever PM na Escala Ativ Delegada",
+// numa popup RECÉM-LOGADA (veja pesquisarEscalas — cada AISP agora usa sua
+// própria popup nova, feita via login do zero).
+//
+// ⚠️ CORREÇÃO 31/07/2026 (bug real, grave, confirmado em log de execução real):
+// a versão anterior tentava reaproveitar a MESMA popup entre AISPs diferentes —
+// primeiro só reclicando o menu em cascata (SIRH → Escala → Inscrever PM), depois
+// (numa correção anterior) dando page1.reload() antes de reclicar. NENHUMA das
+// duas formas funcionou de verdade: nos logs reais, a 1ª AISP do run sempre abria
+// a tela certinho, mas a partir da 2ª AISP o campo #vIDFAGPGEOSST simplesmente
+// nunca mais reaparecia — 100% de falha, em TODAS as tentativas (9 tentativas
+// por AISP, ~4min perdidos cada), até o job inteiro ser cancelado por timeout
+// antes de terminar nem metade das áreas, sem notificar nada e sem salvar
+// progresso. A ÚNICA sequência comprovada como 100% confiável no log real foi:
+// login do zero → popup nova → hover no menu → tela de pesquisa aparece. Por
+// isso agora essa função só faz a parte do menu — quem garante a popup "limpa"
+// é fazerLoginEAbrirDelegada, chamada do zero pra CADA AISP em pesquisarEscalas.
+async function abrirTelaPesquisaDelegada(page1) {
     // Menu em cascata: passa o mouse em "SIRH" → abre submenu "Escala" → passa o
     // mouse nele → abre o submenu final com "Inscrever PM na Escala Ativ Delegada".
     // Precisa do hover em cada nível (não é link direto, é JS de onmouseover).
@@ -256,10 +251,9 @@ async function abrirTelaPesquisaDelegada(page1, verificarApto, recarregarAntes) 
     await page1.waitForTimeout(1500);
     await page1.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
 
-    if (!verificarApto) return;
-
-    // Tela de "declaração de apto" — só costuma aparecer às vezes / na primeira vez.
-    // Tenta com timeout curto; se não achar, segue sem erro.
+    // Tela de "declaração de apto" — só costuma aparecer às vezes / na primeira
+    // vez de cada popup nova. Tenta com timeout curto; se não achar, segue sem
+    // erro (custa no máximo 3s à toa quando não aparece, o que é aceitável).
     try {
         var embFrameApto = page1.frameLocator('iframe[name="Embpage"]');
         await embFrameApto.locator("#vAPTO").check({ timeout: 3000 });
@@ -267,7 +261,7 @@ async function abrirTelaPesquisaDelegada(page1, verificarApto, recarregarAntes) 
         await page1.waitForTimeout(700);
         await page1.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
     } catch (e) {
-        // ok, não aparece de novo depois da primeira vez — segue o fluxo
+        // ok, não apareceu dessa vez — segue o fluxo
     }
 }
 
@@ -384,40 +378,37 @@ async function clicarProcurarGX(frame) {
 // num estado transitório (ex: "[]" ainda carregando) que já diferia de null —
 // fazendo o código aceitar uma leitura vazia/incompleta como se already fosse o
 // resultado final, mesmo a busca ainda não tendo terminado de verdade.
-async function pesquisarEscalas(page1, aisp) {
+async function pesquisarEscalas(browserContext, aisp, onErro) {
     console.log("🔎 Pesquisando " + _nomeDaAisp(aisp) + " (AISP " + aisp + ")...");
-
-    var embFrame = page1.frameLocator('iframe[name="Embpage"]');
 
     var dataIni = formatarDataBR(hoje());
     var dataFim = formatarDataBR(new Date(hoje().getTime() + JANELA_DIAS * 24 * 60 * 60 * 1000));
 
-    // Reabre a tela de pesquisa do zero pra CADA AISP (não só na primeira vez do
-    // run) — corrige o bug em que a paginação ficava "grudada" na posição da AISP
-    // anterior, fazendo a grade vir vazia mesmo com resultado de verdade disponível.
-    // Só verifica a declaração de "apto" na 1ª AISP do run (ela não aparece de novo
-    // depois disso, então checar nas outras 17 só desperdiçava ~3s cada à toa).
-    //
-    // IMPORTANTE (bug real corrigido): pegar a referência bruta do frame (via
-    // page1.frame({name:...})) ANTES do iframe recarregado terminar de assentar é
-    // arriscado — se o postback ainda estiver trocando o conteúdo do iframe nesse
-    // instante, essa referência pode ficar presa numa versão velha/prestes a ser
-    // destruída, e toda leitura feita nela depois fica "morta" pra sempre (grade
-    // sempre vazia, sem nenhum erro visível). Por isso a ordem é: primeiro espera o
-    // campo aparecer usando o FRAME LOCATOR (que sempre resolve pro iframe ATUAL,
-    // robusto a troca/reload) — só DEPOIS disso confirmado é que pegamos a
-    // referência bruta do frame pra usar com .evaluate() no resto da função.
-    //
-    // Essa espera às vezes estoura por lentidão pontual do site (não é bug de
-    // lógica) — em vez de derrubar a checagem INTEIRA na primeira vez que isso
-    // acontece com qualquer AISP, tenta reabrir a tela do zero até 3 vezes antes
-    // de desistir de verdade dessa AISP específica.
+    // ⚠️ CORREÇÃO 31/07/2026: cada AISP agora faz LOGIN DO ZERO, numa popup nova
+    // só dela — em vez de reaproveitar uma popup entre AISPs (que nunca funcionou
+    // de forma confiável, ver comentário em abrirTelaPesquisaDelegada). Mais lento
+    // por AISP (~15-20s a mais de login), mas é a única sequência 100% confiável
+    // que já vimos rodando de verdade. Também tira screenshot de diagnóstico se
+    // falhar de novo mesmo assim, pra dar pra investigar direito da próxima vez.
+    var page1 = null;
+    var embFrame = null;
     var embFrameHandle = null;
     var ultimoErroAbertura = null;
-    for (var tentativaAbertura = 1; tentativaAbertura <= 3; tentativaAbertura++) {
-        var ehAberturaAbsolutamentePrimeira = (aisp === AISPS_MONITORADAS[0] && tentativaAbertura === 1);
+    var MAX_TENTATIVAS_ABERTURA = 2;
+    for (var tentativaAbertura = 1; tentativaAbertura <= MAX_TENTATIVAS_ABERTURA; tentativaAbertura++) {
         try {
-            await abrirTelaPesquisaDelegada(page1, ehAberturaAbsolutamentePrimeira, !ehAberturaAbsolutamentePrimeira);
+            page1 = await fazerLoginEAbrirDelegada(browserContext, onErro);
+            await abrirTelaPesquisaDelegada(page1);
+            embFrame = page1.frameLocator('iframe[name="Embpage"]');
+            // IMPORTANTE (bug real corrigido): pegar a referência bruta do frame (via
+            // page1.frame({name:...})) ANTES do iframe terminar de assentar é
+            // arriscado — se o postback ainda estiver trocando o conteúdo do iframe
+            // nesse instante, essa referência pode ficar presa numa versão velha/
+            // prestes a ser destruída, e toda leitura feita nela depois fica "morta"
+            // pra sempre (grade sempre vazia, sem nenhum erro visível). Por isso a
+            // ordem é: primeiro espera o campo aparecer usando o FRAME LOCATOR (que
+            // sempre resolve pro iframe ATUAL) — só DEPOIS disso confirmado é que
+            // pegamos a referência bruta do frame pra usar com .evaluate().
             await embFrame.locator("#vIDFAGPGEOSST").waitFor({ state: "visible", timeout: 20000 });
             embFrameHandle = page1.frame({ name: "Embpage" });
             if (!embFrameHandle) throw new Error("Não achei o iframe Embpage — a estrutura da página pode ter mudado.");
@@ -425,13 +416,16 @@ async function pesquisarEscalas(page1, aisp) {
             break;
         } catch (e) {
             ultimoErroAbertura = e;
-            console.log("   ⚠️ Não consegui abrir a tela de pesquisa pra AISP " + aisp + " (tentativa " + tentativaAbertura + "/3): " + e.message);
+            console.log("   ⚠️ Não consegui abrir a tela de pesquisa pra AISP " + aisp + " (tentativa " + tentativaAbertura + "/" + MAX_TENTATIVAS_ABERTURA + "): " + e.message);
+            if (typeof onErro === "function") await onErro(page1, "aisp_" + aisp + "_t" + tentativaAbertura);
+            if (page1) { await page1.close().catch(() => {}); page1 = null; }
         }
     }
     if (!embFrameHandle) {
-        throw ultimoErroAbertura || new Error("Não consegui abrir a tela de pesquisa pra AISP " + aisp + " depois de 3 tentativas.");
+        throw ultimoErroAbertura || new Error("Não consegui abrir a tela de pesquisa pra AISP " + aisp + " depois de " + MAX_TENTATIVAS_ABERTURA + " tentativas.");
     }
 
+  try {
     // Mesmo com o campo já visível, a API interna do GeneXus (window.gx / gx.O)
     // pode levar um instante a mais pra ficar pronta — espera de verdade em vez de
     // confiar em tempo fixo, já que preencherCampoGX depende dela.
@@ -590,6 +584,12 @@ async function pesquisarEscalas(page1, aisp) {
     }
 
     return { linhas: resultadosSemDuplicata, totalEsperado: totalEsperado };
+  } finally {
+    // Sempre fecha a popup dessa AISP, dê certo ou não — cada AISP tem a sua
+    // própria (login do zero), então não fechar acumularia uma popup aberta
+    // por AISP até o fim do run inteiro.
+    if (page1) await page1.close().catch(() => {});
+  }
 }
 
 (async function main() {
@@ -600,21 +600,46 @@ async function pesquisarEscalas(page1, aisp) {
     var vistos = carregarVistos();
     var novos = [];
     var browser = await chromium.launch({ headless: true });
-    var page1 = null;
-    async function tirarScreenshotErro(pagina) {
+    // Cada screenshot leva um rótulo único no nome do arquivo (ex: erro_login.png,
+    // erro_aisp_85759_t1.png) — antes só existia um "erro.png" fixo, que a 2ª
+    // falha do mesmo run já sobrescrevia, perdendo a evidência da 1ª.
+    async function tirarScreenshotErro(pagina, rotulo) {
         if (!pagina) return;
-        try { await pagina.screenshot({ path: path.join(__dirname, "erro.png"), fullPage: true }); }
+        var nomeArquivo = "erro" + (rotulo ? ("_" + rotulo) : "") + ".png";
+        try { await pagina.screenshot({ path: path.join(__dirname, nomeArquivo), fullPage: true }); }
         catch (e) { console.error("⚠️ Não consegui tirar a screenshot de erro:", e.message); }
     }
-    try {
-        var context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
-        page1 = await fazerLoginEAbrirDelegada(context, tirarScreenshotErro);
 
-        var resultadoPorArea = []; // { aisp, nome, total } — TODAS as áreas verificadas, mesmo com 0
-        var MAX_TENTATIVAS_AISP = 3; // se a paginação ficar devendo escalas (comparado ao Total de
+    // ⚠️ Orçamento de tempo (CORREÇÃO 31/07/2026): o job do GitHub Actions tem um
+    // timeout (veja monitorar.yml). Antes, se a checagem de uma AISP travasse
+    // repetidamente, o run inteiro corria o risco de ser CANCELADO no meio pelo
+    // GitHub — o que pula até os passos "if: always()" (notificar Telegram,
+    // salvar seen.json), perdendo TODO o progresso do run sem avisar ninguém.
+    // Agora o próprio script para sozinho, de forma limpa, bem antes desse
+    // limite, e ainda notifica/salva o que já deu tempo de checar — as áreas
+    // que sobrarem são pegas na próxima execução (30 min depois).
+    var INICIO_MS = Date.now();
+    var ORCAMENTO_MAX_MINUTOS = 22;
+    function minutosDecorridos() { return (Date.now() - INICIO_MS) / 60000; }
+
+    var context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+    var resultadoPorArea = []; // { aisp, nome, total } — TODAS as áreas verificadas, mesmo com 0
+    try {
+        var MAX_TENTATIVAS_AISP = 2; // se a paginação ficar devendo escalas (comparado ao Total de
         // Registros da própria grade), refaz a busca dessa AISP do zero em vez de aceitar parcial
-        for (const aisp of AISPS_MONITORADAS) {
-            var ehPrimeiraAispDoRun = (aisp === AISPS_MONITORADAS[0]);
+        for (var i = 0; i < AISPS_MONITORADAS.length; i++) {
+            var aisp = AISPS_MONITORADAS[i];
+
+            if (minutosDecorridos() > ORCAMENTO_MAX_MINUTOS) {
+                console.log("⏰ Orçamento de tempo (" + ORCAMENTO_MAX_MINUTOS + " min) esgotado depois de checar " +
+                    i + "/" + AISPS_MONITORADAS.length + " área(s) — parando aqui pra não correr o risco do job " +
+                    "inteiro ser cancelado. As áreas restantes serão checadas na próxima execução (30 min).");
+                for (var j = i; j < AISPS_MONITORADAS.length; j++) {
+                    resultadoPorArea.push({ aisp: AISPS_MONITORADAS[j], nome: _nomeDaAisp(AISPS_MONITORADAS[j]), total: 0, semTempo: true });
+                }
+                break;
+            }
+
             var resultadoBusca = null;
             var ultimoErroAisp = null;
             for (var tentativaAisp = 1; tentativaAisp <= MAX_TENTATIVAS_AISP; tentativaAisp++) {
@@ -622,10 +647,9 @@ async function pesquisarEscalas(page1, aisp) {
                 // (ex: timeout esperando o campo de AISP aparecer, por lentidão pontual
                 // do site) — antes isso derrubava a checagem INTEIRA e perdia o progresso
                 // de todas as outras AISPs. Agora captura aqui: se falhar, tenta de novo
-                // (mesmas MAX_TENTATIVAS_AISP tentativas já usadas pra paginação incompleta)
                 // e, se mesmo assim continuar falhando, pula só essa AISP e segue o run.
                 try {
-                    resultadoBusca = await pesquisarEscalas(page1, aisp);
+                    resultadoBusca = await pesquisarEscalas(context, aisp, tirarScreenshotErro);
                 } catch (e) {
                     ultimoErroAisp = e;
                     console.log("   ❌ Falha ao pesquisar AISP " + aisp + " (tentativa " + tentativaAisp + "/" + MAX_TENTATIVAS_AISP + "): " + e.message);
@@ -633,13 +657,13 @@ async function pesquisarEscalas(page1, aisp) {
                     continue;
                 }
                 var completo = resultadoBusca.totalEsperado === null || resultadoBusca.linhas.length >= resultadoBusca.totalEsperado;
-                // Segurança extra só pra 1ª AISP do run: é a única que roda logo depois
-                // do login (às vezes mais lento/instável), janela em que já vimos um bug
-                // real de preenchimento de campo falhar silenciosamente e voltar "0 registros"
-                // mesmo tendo escalas de verdade. Não aceita um "0" de primeira aqui — confirma
-                // com pelo menos mais uma tentativa antes de aceitar como resultado real.
-                if (completo && ehPrimeiraAispDoRun && resultadoBusca.totalEsperado === 0 && tentativaAisp === 1) {
-                    console.log("   ℹ️ 1ª AISP do run veio com 0 registros — confirmando com mais uma tentativa antes de aceitar (pode ser efeito do login ainda assentando)...");
+                // Segurança extra: como TODA AISP agora roda logo depois do próprio login
+                // dela (login do zero por AISP), qualquer uma pode pegar aquela janela em
+                // que já vimos um bug real de preenchimento de campo falhar silenciosamente
+                // e voltar "0 registros" mesmo tendo escalas de verdade. Não aceita um "0"
+                // de primeira — confirma com mais uma tentativa antes de aceitar como real.
+                if (completo && resultadoBusca.totalEsperado === 0 && tentativaAisp === 1) {
+                    console.log("   ℹ️ Veio com 0 registros na 1ª tentativa — confirmando com mais uma antes de aceitar (pode ser efeito do login ainda assentando)...");
                     continue;
                 }
                 if (completo) break;
@@ -672,9 +696,7 @@ async function pesquisarEscalas(page1, aisp) {
         }
     } catch (err) {
         console.error("❌ Erro durante a checagem:", err);
-        // se a screenshot já não foi tirada dentro do login, tenta tirar de page1 aqui
-        if (page1 && !fs.existsSync(path.join(__dirname, "erro.png"))) await tirarScreenshotErro(page1);
-        salvarResultado({ erro: String(err).slice(0, 300), novos: [], resultadoPorArea: [] });
+        salvarResultado({ erro: String(err).slice(0, 300), novos: [], resultadoPorArea: resultadoPorArea });
         salvarVistos(vistos);
         await browser.close();
         process.exit(1);
