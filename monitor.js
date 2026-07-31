@@ -156,13 +156,39 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
         await page.waitForTimeout(1500);
 
         // a tela inicial mostra o portal (avisos, calendário) — o formulário de login só
-        // aparece depois de clicar na aba "Procedimentos" da barra lateral esquerda
-        await clicarAbaProcedimentosSeExistir(page);
-        await page.waitForTimeout(1000);
-        await page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
-
+        // aparece depois de clicar na aba "Procedimentos" da barra lateral esquerda.
+        // Em vez de clicar uma vez só e esperar 45s no vazio (se o clique não tiver
+        // "pegado" por algum motivo, isso só desperdiça tempo até estourar o timeout),
+        // fica tentando de novo — reclicando a aba a cada tentativa — até o campo de
+        // login realmente aparecer visível, com um teto total generoso.
+        // O campo de login fica dentro de um iframe próprio (#mainMS, que carrega
+        // http://ms.policiamilitar.sp.gov.br/login.aspx — uma navegação de rede
+        // separada da página principal). Só clicar na aba não garante que essa
+        // navegação já terminou; por isso espera o próprio iframe carregar antes
+        // de checar se o campo está visível.
         var loginFrame = page.frameLocator('frame[name="meio"]').frameLocator("#mainMS");
-        await loginFrame.locator("#vUSRNUMCPFAUX").waitFor({ state: "visible", timeout: 45000 });
+        var campoLoginVisivel = false;
+        for (var tentativaAba = 1; tentativaAba <= 4 && !campoLoginVisivel; tentativaAba++) {
+            await clicarAbaProcedimentosSeExistir(page);
+            await page.waitForTimeout(500);
+            var msFrame = page.frames().find(function (f) { return f.url().indexOf("login.aspx") !== -1; });
+            if (msFrame) {
+                await msFrame.waitForLoadState("domcontentloaded", { timeout: 8000 }).catch(() => {});
+            }
+            await page.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
+            try {
+                await loginFrame.locator("#vUSRNUMCPFAUX").waitFor({ state: "visible", timeout: 12000 });
+                campoLoginVisivel = true;
+            } catch (e) {
+                if (tentativaAba < 4) {
+                    console.log("ℹ️ Campo de login ainda não apareceu — tentando clicar em 'Procedimentos' de novo (tentativa " + (tentativaAba + 1) + "/4)...");
+                }
+            }
+        }
+        if (!campoLoginVisivel) {
+            // última tentativa, com o timeout mais generoso de todos, antes de desistir de vez
+            await loginFrame.locator("#vUSRNUMCPFAUX").waitFor({ state: "visible", timeout: 20000 });
+        }
         await loginFrame.locator("#vUSRNUMCPFAUX").fill(PMESP_USUARIO);
         await loginFrame.locator("#vUSRNUMCPFAUX").press("Tab").catch(() => {});
         await loginFrame.locator("#vSENHA").fill(PMESP_SENHA);
