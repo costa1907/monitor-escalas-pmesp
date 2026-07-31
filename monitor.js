@@ -378,21 +378,46 @@ async function pesquisarEscalas(page1, aisp) {
     // (até ~12s) se a grade mudou em relação ao estado de ANTES de clicar em
     // Procurar. Se nunca mudar (ex: realmente não tem nenhuma escala), segue
     // com o que tiver depois do teto de tentativas.
+    // IMPORTANTE (bug real corrigido): ao trocar de AISP, a grade passa por um
+    // instante em que fica "limpa" (vazia) enquanto o postback processa a nova
+    // busca, ANTES dos dados novos aparecerem. Esse instante vazio já é diferente
+    // do "fingerprintAntes" (que tinha os dados da AISP anterior) — então aceitar
+    // a PRIMEIRA leitura diferente como resultado final fazia o código travar
+    // nesse instante vazio e reportar "0 escalas" mesmo quando a AISP tinha
+    // resultado de verdade. Corrigido exigindo que a MESMA leitura apareça duas
+    // vezes seguidas (2 ciclos de 300ms) antes de aceitar como estável — um
+    // estado passageiro de "limpando" não se repete, só o resultado real fica.
     var linhasAtuais = null;
     var fingerprintAtual = null;
+    var candidatoFingerprint = null;
+    var candidatoLinhas = null;
     for (var t = 0; t < 40; t++) {
         await page1.waitForTimeout(300);
         var linhasTeste = await embFrameHandle.evaluate(_lerLinhasGrade);
         var fpTeste = JSON.stringify(linhasTeste);
-        if (fpTeste !== fingerprintAntes) {
+        if (fpTeste === fingerprintAntes) {
+            candidatoFingerprint = null; // ainda não mudou nada — reseta candidato
+            continue;
+        }
+        if (fpTeste === candidatoFingerprint) {
+            // mesma leitura confirmada 2x seguidas — considera estável de verdade
             linhasAtuais = linhasTeste;
             fingerprintAtual = fpTeste;
             break;
         }
+        candidatoFingerprint = fpTeste;
+        candidatoLinhas = linhasTeste;
     }
     if (linhasAtuais === null) {
-        linhasAtuais = await embFrameHandle.evaluate(_lerLinhasGrade);
-        fingerprintAtual = JSON.stringify(linhasAtuais);
+        // não deu tempo de confirmar 2x dentro do prazo — usa a última leitura
+        // candidata que já tinha (melhor que nada), ou lê de novo como último recurso
+        if (candidatoLinhas !== null) {
+            linhasAtuais = candidatoLinhas;
+            fingerprintAtual = candidatoFingerprint;
+        } else {
+            linhasAtuais = await embFrameHandle.evaluate(_lerLinhasGrade);
+            fingerprintAtual = JSON.stringify(linhasAtuais);
+        }
     }
 
     var totalEsperado = await embFrameHandle.evaluate(_lerTotalRegistros).catch(() => null);
@@ -428,19 +453,31 @@ async function pesquisarEscalas(page1, aisp) {
         for (var tentativaClique = 0; tentativaClique < 3 && !mudou; tentativaClique++) {
             await clicarProximaPaginaGX(embFrameHandle);
 
-            // O postback do GeneXus pode demorar mais que um tempo fixo — em vez de
-            // esperar um valor fixo e arriscar ler a grade antes dela atualizar,
-            // fica checando a cada 300ms (até ~8s) se a grade realmente mudou.
+            // Mesma proteção contra "estado passageiro" usada na busca inicial:
+            // só aceita a página nova como estável depois de ler a MESMA coisa
+            // 2 vezes seguidas — evita travar num instante de transição vazio.
+            var candFp = null;
+            var candLinhas = null;
             for (var tentativa = 0; tentativa < 27; tentativa++) {
                 await page1.waitForTimeout(300);
                 var novasLinhas = await embFrameHandle.evaluate(_lerLinhasGrade);
                 var novoFingerprint = JSON.stringify(novasLinhas);
-                if (novoFingerprint !== fingerprintAtual) {
+                if (novoFingerprint === fingerprintAtual) continue;
+                if (novoFingerprint === candFp) {
                     linhasAtuais = novasLinhas;
                     fingerprintAtual = novoFingerprint;
                     mudou = true;
                     break;
                 }
+                candFp = novoFingerprint;
+                candLinhas = novasLinhas;
+            }
+            if (!mudou && candLinhas !== null) {
+                // não deu tempo de confirmar 2x, mas teve pelo menos uma leitura
+                // diferente — melhor aproveitar do que nada
+                linhasAtuais = candLinhas;
+                fingerprintAtual = candFp;
+                mudou = true;
             }
             if (!mudou && tentativaClique < 2) {
                 console.log("   ⚠️ Clique em 'Próxima' não teve efeito — tentando de novo (tentativa " + (tentativaClique + 2) + "/3)...");
