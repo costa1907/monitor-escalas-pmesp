@@ -129,8 +129,17 @@ function montarMensagensDoGrupo(grupo) {
     var linhasAtuais = [];
     var itensNaParte = 0;
     function fecharParte() {
-        var cabecalho = "👀 <b>" + itensNaParte + " escala(s) nova(s) — " + grupo.nome + " (AISP " + grupo.aisp + ")" +
-            (partesTotal > 1 ? " — parte " + parteAtual + "/" + partesTotal : "") + "</b>\n\n";
+        // CORREÇÃO 31/07/2026 (cabeçalho mais "profissional", a pedido do
+        // usuário): tirado o emoji 👀. 1ª linha só com a contagem (em negrito),
+        // 2ª linha com nome + AISP (sem negrito, sem emoji) — simulado e
+        // aprovado pelo usuário antes de aplicar de vez. A área com o nome
+        // mais longo cadastrado ("Volante Cenas Abertas de Uso") fica numa
+        // zona de risco de quebrar essa 2ª linha (~41 caracteres), mas as
+        // outras 17 áreas são bem mais curtas e devem caber numa linha só.
+        var cabecalho = "<b>" + itensNaParte + " escala(s) nova(s)</b>\n" +
+            grupo.nome + " (AISP " + grupo.aisp + ")" +
+            (partesTotal > 1 ? " — parte " + parteAtual + "/" + partesTotal : "") +
+            "\n\n";
         mensagens.push(cabecalho + linhasAtuais.join("\n\n") + rodape);
         parteAtual++;
         linhasAtuais = [];
