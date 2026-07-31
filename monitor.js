@@ -220,20 +220,30 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
 // (já não tinha pra onde avançar a partir de uma página inválida). Reabrir a
 // tela do zero pra CADA AISP garante que a grade e a paginação sempre começam
 // limpas, do jeito que aconteceu certinho na primeiríssima busca do run.
-async function abrirTelaPesquisaDelegada(page1) {
+// "verificarApto": só precisa ser true na 1ª vez que a tela abre depois do
+// login — essa declaração some depois disso. Nas outras 17 reaberturas (uma
+// por AISP), pedir pra checar mesmo assim custava 3s inteiros de timeout
+// procurando um checkbox que não existe mais, à toa, em TODA busca — um dos
+// maiores desperdícios de tempo do run inteiro (~50s no total num run de 18 AISPs).
+async function abrirTelaPesquisaDelegada(page1, verificarApto) {
     // Menu em cascata: passa o mouse em "SIRH" → abre submenu "Escala" → passa o
     // mouse nele → abre o submenu final com "Inscrever PM na Escala Ativ Delegada".
     // Precisa do hover em cada nível (não é link direto, é JS de onmouseover).
     await page1.locator("td.ThemeClassicMainFolderText", { hasText: "SIRH" }).hover({ timeout: 15000 });
-    await page1.waitForTimeout(500);
+    await page1.waitForTimeout(300);
     await page1.getByText("Escala", { exact: true }).first().hover({ timeout: 10000 });
-    await page1.waitForTimeout(500);
+    await page1.waitForTimeout(300);
     await page1.getByRole("cell", { name: "Inscrever PM na Escala Ativ Delegada" }).click({ timeout: 20000 });
     // O robô Tampermonkey usa 1500ms aqui de propósito (DELAY_TRAVA_VE_CLIQUE_MS) —
     // o comentário original dele já avisa que esse postback específico demora mais
     // que os outros, então mantém esse valor testado em vez de um menor.
     await page1.waitForTimeout(1500);
-    await page1.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
+    // "networkidle" quase nunca dispara de verdade nesse site (tem requisição de
+    // fundo o tempo todo) — o timeout de 3s quase sempre é só esperado até o fim
+    // sem servir pra nada; reduzido pra 1.2s (ainda dá uma folga, sem gastar à toa).
+    await page1.waitForLoadState("networkidle", { timeout: 1200 }).catch(() => {});
+
+    if (!verificarApto) return;
 
     // Tela de "declaração de apto" — só costuma aparecer às vezes / na primeira vez.
     // Tenta com timeout curto; se não achar, segue sem erro.
@@ -367,7 +377,9 @@ async function pesquisarEscalas(page1, aisp) {
     // Reabre a tela de pesquisa do zero pra CADA AISP (não só na primeira vez do
     // run) — corrige o bug em que a paginação ficava "grudada" na posição da AISP
     // anterior, fazendo a grade vir vazia mesmo com resultado de verdade disponível.
-    await abrirTelaPesquisaDelegada(page1);
+    // Só verifica a declaração de "apto" na 1ª AISP do run (ela não aparece de novo
+    // depois disso, então checar nas outras 17 só desperdiçava ~3s cada à toa).
+    await abrirTelaPesquisaDelegada(page1, aisp === AISPS_MONITORADAS[0]);
 
     var embFrame = page1.frameLocator('iframe[name="Embpage"]');
     var embFrameHandle = page1.frame({ name: "Embpage" });
@@ -426,12 +438,15 @@ async function pesquisarEscalas(page1, aisp) {
     // resultado de verdade. Corrigido exigindo que a MESMA leitura apareça duas
     // vezes seguidas (2 ciclos de 300ms) antes de aceitar como estável — um
     // estado passageiro de "limpando" não se repete, só o resultado real fica.
+    // Poll mais frequente (200ms em vez de 300ms, com mais tentativas pra manter o
+    // mesmo teto total de ~12s) — detecta o resultado real mais rápido no caso comum
+    // (que é a grande maioria das buscas), sem abrir mão da margem de segurança.
     var linhasAtuais = null;
     var fingerprintAtual = null;
     var candidatoFingerprint = null;
     var candidatoLinhas = null;
-    for (var t = 0; t < 40; t++) {
-        await page1.waitForTimeout(300);
+    for (var t = 0; t < 60; t++) {
+        await page1.waitForTimeout(200);
         var linhasTeste = await embFrameHandle.evaluate(_lerLinhasGrade);
         var fpTeste = JSON.stringify(linhasTeste);
         if (fpTeste === fingerprintAntes) {
@@ -497,8 +512,8 @@ async function pesquisarEscalas(page1, aisp) {
             // 2 vezes seguidas — evita travar num instante de transição vazio.
             var candFp = null;
             var candLinhas = null;
-            for (var tentativa = 0; tentativa < 27; tentativa++) {
-                await page1.waitForTimeout(300);
+            for (var tentativa = 0; tentativa < 40; tentativa++) {
+                await page1.waitForTimeout(200);
                 var novasLinhas = await embFrameHandle.evaluate(_lerLinhasGrade);
                 var novoFingerprint = JSON.stringify(novasLinhas);
                 if (novoFingerprint === fingerprintAtual) continue;
