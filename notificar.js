@@ -171,7 +171,14 @@ function montarMensagensDoGrupo(grupo) {
     var resumo = "🔎 <b>Checagem concluída</b> — " + agora + "\n" +
         "Total: " + totalGeral + " escala(s) em " + resultadoPorArea.length + " área(s)\n\n" +
         resultadoPorArea
-            .map(function (a) { return (a.total > 0 ? "🟢 " : "⚪ ") + a.nome + " (" + a.aisp + "): " + a.total; })
+            .map(function (a) {
+                // "erro: true" = essa área falhou repetidamente e foi pulada nessa
+                // checagem (não é um "0" de verdade) — sinaliza diferente pra não
+                // confundir com uma área que realmente não tem escala disponível.
+                var icone = a.erro ? "🔴" : (a.total > 0 ? "🟢" : "⚪");
+                var sufixo = a.erro ? " (falhou nessa checagem, tentaremos de novo na próxima)" : "";
+                return icone + " " + a.nome + " (" + a.aisp + "): " + a.total + sufixo;
+            })
             .join("\n") +
         "\n\n" +
         (novos.length > 0
