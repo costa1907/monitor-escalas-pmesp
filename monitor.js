@@ -199,36 +199,52 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
         await page1.waitForLoadState("domcontentloaded");
         await page1.waitForTimeout(1200);
 
-        // Menu em cascata: passa o mouse em "SIRH" → abre submenu "Escala" → passa o
-        // mouse nele → abre o submenu final com "Inscrever PM na Escala Ativ Delegada".
-        // Precisa do hover em cada nível (não é link direto, é JS de onmouseover).
-        await page1.locator("td.ThemeClassicMainFolderText", { hasText: "SIRH" }).hover({ timeout: 15000 });
-        await page1.waitForTimeout(500);
-        await page1.getByText("Escala", { exact: true }).first().hover({ timeout: 10000 });
-        await page1.waitForTimeout(500);
-        await page1.getByRole("cell", { name: "Inscrever PM na Escala Ativ Delegada" }).click({ timeout: 20000 });
-        // O robô Tampermonkey usa 1500ms aqui de propósito (DELAY_TRAVA_VE_CLIQUE_MS) —
-        // o comentário original dele já avisa que esse postback específico demora mais
-        // que os outros, então mantém esse valor testado em vez de um menor.
-        await page1.waitForTimeout(1500);
-        await page1.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
-
-        // Tela de "declaração de apto" — só costuma aparecer às vezes / na primeira vez.
-        // Tenta com timeout curto; se não achar, segue sem erro.
-        try {
-            var embFrameApto = page1.frameLocator('iframe[name="Embpage"]');
-            await embFrameApto.locator("#vAPTO").check({ timeout: 3000 });
-            await embFrameApto.getByRole("button", { name: "Confirma" }).click({ timeout: 3000 });
-            await page1.waitForTimeout(700);
-            await page1.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
-        } catch (e) {
-            console.log("ℹ️ Tela de declaração de apto não apareceu desta vez (ok, segue o fluxo).");
-        }
+        // Não abre a tela de pesquisa aqui — cada chamada de pesquisarEscalas() já
+        // abre (de novo) do zero pra cada AISP, então abrir aqui só duplicaria a
+        // navegação à toa na primeira AISP do run.
 
         return page1;
     } catch (err) {
         if (typeof onErro === "function") await onErro(page1 || page, "login");
         throw err;
+    }
+}
+
+// ── Navega (de novo) até a tela de pesquisa "Inscrever PM na Escala Ativ
+// Delegada", recarregando o iframe Embpage do zero. IMPORTANTE (bug real
+// corrigido): reaproveitar o MESMO iframe entre buscas de AISPs diferentes
+// deixava a paginação "grudada" na posição da busca anterior — a 1ª AISP
+// terminava na página 9 (a última), e ao pesquisar a 2ª AISP no mesmo iframe
+// a grade tentava mostrar essa mesma "página 9", que não existe no resultado
+// novo (menor), voltando vazia — e por isso "Próxima" também não tinha efeito
+// (já não tinha pra onde avançar a partir de uma página inválida). Reabrir a
+// tela do zero pra CADA AISP garante que a grade e a paginação sempre começam
+// limpas, do jeito que aconteceu certinho na primeiríssima busca do run.
+async function abrirTelaPesquisaDelegada(page1) {
+    // Menu em cascata: passa o mouse em "SIRH" → abre submenu "Escala" → passa o
+    // mouse nele → abre o submenu final com "Inscrever PM na Escala Ativ Delegada".
+    // Precisa do hover em cada nível (não é link direto, é JS de onmouseover).
+    await page1.locator("td.ThemeClassicMainFolderText", { hasText: "SIRH" }).hover({ timeout: 15000 });
+    await page1.waitForTimeout(500);
+    await page1.getByText("Escala", { exact: true }).first().hover({ timeout: 10000 });
+    await page1.waitForTimeout(500);
+    await page1.getByRole("cell", { name: "Inscrever PM na Escala Ativ Delegada" }).click({ timeout: 20000 });
+    // O robô Tampermonkey usa 1500ms aqui de propósito (DELAY_TRAVA_VE_CLIQUE_MS) —
+    // o comentário original dele já avisa que esse postback específico demora mais
+    // que os outros, então mantém esse valor testado em vez de um menor.
+    await page1.waitForTimeout(1500);
+    await page1.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
+
+    // Tela de "declaração de apto" — só costuma aparecer às vezes / na primeira vez.
+    // Tenta com timeout curto; se não achar, segue sem erro.
+    try {
+        var embFrameApto = page1.frameLocator('iframe[name="Embpage"]');
+        await embFrameApto.locator("#vAPTO").check({ timeout: 3000 });
+        await embFrameApto.getByRole("button", { name: "Confirma" }).click({ timeout: 3000 });
+        await page1.waitForTimeout(700);
+        await page1.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
+    } catch (e) {
+        // ok, não aparece de novo depois da primeira vez — segue o fluxo
     }
 }
 
@@ -347,6 +363,12 @@ async function clicarProcurarGX(frame) {
 // resultado final, mesmo a busca ainda não tendo terminado de verdade.
 async function pesquisarEscalas(page1, aisp) {
     console.log("🔎 Pesquisando " + _nomeDaAisp(aisp) + " (AISP " + aisp + ")...");
+
+    // Reabre a tela de pesquisa do zero pra CADA AISP (não só na primeira vez do
+    // run) — corrige o bug em que a paginação ficava "grudada" na posição da AISP
+    // anterior, fazendo a grade vir vazia mesmo com resultado de verdade disponível.
+    await abrirTelaPesquisaDelegada(page1);
+
     var embFrame = page1.frameLocator('iframe[name="Embpage"]');
     var embFrameHandle = page1.frame({ name: "Embpage" });
     if (!embFrameHandle) throw new Error("Não achei o iframe Embpage — a estrutura da página pode ter mudado.");
