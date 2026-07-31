@@ -80,17 +80,26 @@ function agruparPorArea(novos) {
     return Array.from(porAisp.values());
 }
 
+function abreviarAno(data) {
+    // dd/mm/aaaa -> dd/mm/aa — corta 2 caracteres da 1ª linha, que é a mais
+    // apertada pra caber numa linha só em telas de canal (mais estreitas que
+    // conversa direta — confirmado pelo usuário comparando os dois).
+    return String(data).replace(/\/\d{2}(\d{2})$/, "/$1");
+}
+
 function formatarLinhaEscala(n) {
     // Ordem confirmada pelo usuário direto no site: "Efetivo Tot." é o total de
     // vagas disponíveis pra marcar, e "Inscritos" é quantas já foram preenchidas
     // — antes estava invertido na mensagem.
     //
-    // CORREÇÃO 31/07/2026: a 1ª linha (data/ID/horário) usava 3 espaços entre
-    // cada campo — em telas de celular isso estourava a largura e quebrava pra
-    // uma 2ª linha visual, ficando feio. Reduzido pra 1 espaço só, que já dá
-    // separação visual suficiente entre os emojis e cabe inteiro numa linha.
-    return "📅 " + n.data + " 🆔 " + n.escalaId + " 🕐 " + n.horaIni + " x " + n.horaFim + "\n" +
-        "👥 Total de Vagas: " + (n.efetivoTotal || "?") + " | Inscritos: " + (n.inscritos || "?") + "\n" +
+    // CORREÇÃO 31/07/2026 (parte 4, a pedido do usuário): voltou pro formato
+    // com os emojis 🆔 (ID) e 🕐 (horário) — as tentativas anteriores de tirar
+    // esses emojis pra economizar espaço não foram o que o usuário queria
+    // manter. A única mudança que ficou pra ajudar a caber na 1ª linha foi o
+    // ano abreviado (dd/mm/aa em vez de dd/mm/aaaa), que sozinho já corta 2
+    // caracteres sem mudar o visual dos emojis.
+    return "📅 " + abreviarAno(n.data) + " 🆔 " + n.escalaId + " 🕐 " + n.horaIni + " x " + n.horaFim + "\n" +
+        "👥 Vagas: <b>" + (n.efetivoTotal || "?") + "</b>  |  Inscritos: " + (n.inscritos || "?") + "\n" +
         "⏳ Limite Inscrição: " + (n.dataLimite || "?");
 }
 
