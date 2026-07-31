@@ -376,6 +376,23 @@ async function pesquisarEscalas(page1, aisp) {
     var dataIni = formatarDataBR(hoje());
     var dataFim = formatarDataBR(new Date(hoje().getTime() + JANELA_DIAS * 24 * 60 * 60 * 1000));
 
+    // IMPORTANTE (bug real corrigido): preencherCampoGX depende da API interna do
+    // GeneXus (window.gx / gx.O) já estar pronta dentro do iframe Embpage. Como a
+    // tela agora é reaberta do zero a cada AISP, existe uma janela real em que o
+    // iframe recém-carregado ainda não terminou de inicializar essa API — e isso
+    // fica bem mais provável logo depois de um login mais lento (aconteceu num run
+    // real: a 1ª AISP saiu com "0 registros" porque o preenchimento de AISP/datas
+    // falhou silenciosamente e a busca rodou com o formulário errado/vazio). Em vez
+    // de confiar que 1500ms + networkidle sempre é tempo suficiente, espera de
+    // verdade a API do GeneXus responder antes de preencher qualquer campo.
+    await embFrameHandle.waitForFunction(
+        () => typeof gx !== "undefined" && !!gx.O && typeof gx.O.setVariable === "function" || (typeof gx !== "undefined" && typeof gx.setVar === "function"),
+        { timeout: 10000 }
+    ).catch(() => {
+        console.log("   ⚠️ API interna do GeneXus (gx.O) não respondeu dentro do prazo — seguindo mesmo assim.");
+    });
+    await embFrame.locator("#vIDFAGPGEOSST").waitFor({ state: "visible", timeout: 10000 }).catch(() => {});
+
     // Retrato da grade ANTES de mexer em qualquer coisa — essa é a base de
     // comparação usada logo abaixo, pra garantir que detectamos uma mudança real.
     var fingerprintAntes = JSON.stringify(await embFrameHandle.evaluate(_lerLinhasGrade));
@@ -535,10 +552,20 @@ async function pesquisarEscalas(page1, aisp) {
         var MAX_TENTATIVAS_AISP = 3; // se a paginação ficar devendo escalas (comparado ao Total de
         // Registros da própria grade), refaz a busca dessa AISP do zero em vez de aceitar parcial
         for (const aisp of AISPS_MONITORADAS) {
+            var ehPrimeiraAispDoRun = (aisp === AISPS_MONITORADAS[0]);
             var resultadoBusca;
             for (var tentativaAisp = 1; tentativaAisp <= MAX_TENTATIVAS_AISP; tentativaAisp++) {
                 resultadoBusca = await pesquisarEscalas(page1, aisp);
                 var completo = resultadoBusca.totalEsperado === null || resultadoBusca.linhas.length >= resultadoBusca.totalEsperado;
+                // Segurança extra só pra 1ª AISP do run: é a única que roda logo depois
+                // do login (às vezes mais lento/instável), janela em que já vimos um bug
+                // real de preenchimento de campo falhar silenciosamente e voltar "0 registros"
+                // mesmo tendo escalas de verdade. Não aceita um "0" de primeira aqui — confirma
+                // com pelo menos mais uma tentativa antes de aceitar como resultado real.
+                if (completo && ehPrimeiraAispDoRun && resultadoBusca.totalEsperado === 0 && tentativaAisp === 1) {
+                    console.log("   ℹ️ 1ª AISP do run veio com 0 registros — confirmando com mais uma tentativa antes de aceitar (pode ser efeito do login ainda assentando)...");
+                    continue;
+                }
                 if (completo) break;
                 if (tentativaAisp < MAX_TENTATIVAS_AISP) {
                     console.log("⚠️ Só capturei " + resultadoBusca.linhas.length + "/" + resultadoBusca.totalEsperado +
