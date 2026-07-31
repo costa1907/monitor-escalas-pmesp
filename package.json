@@ -1,0 +1,13 @@
+{
+  "name": "monitor-escalas-pmesp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Monitora o site da Atividade Delegada PMESP e avisa no Telegram quando aparecem escalas disponíveis, rodando via GitHub Actions (sem precisar do computador ligado).",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node monitor.js"
+  },
+  "dependencies": {
+    "playwright": "^1.47.0"
+  }
+}
