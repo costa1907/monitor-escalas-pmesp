@@ -27,7 +27,17 @@ const RESULTADO_PATH = path.join(__dirname, "resultado.json");
 
 // Pausa mínima entre mensagens pro mesmo chat — o Telegram recomenda não passar
 // de ~1 msg/segundo pro mesmo destinatário.
-const PAUSA_ENTRE_ENVIOS_MS = 1200;
+// CORREÇÃO 01/08/2026 (bug real, confirmado): o Telegram permite no máximo
+// 20 mensagens por minuto pro MESMO grupo/canal (limite oficial — ver
+// https://core.telegram.org/bots/faq). O valor antigo (1200ms = ~50 msg/min)
+// nunca dava problema em checagens normais (poucas escalas novas por vez),
+// mas quando o seen.json foi resetado, a checagem seguinte tratou TODAS as
+// escalas atuais como "novas" de uma vez (~30-40 mensagens), estourando esse
+// limite logo no início — o Telegram passou a recusar com erro 429, e mesmo
+// com as novas tentativas automáticas, isso pode consumir tempo/tentativas
+// demais até nada sair de verdade. 3300ms fica seguro (~18 msg/min, com
+// margem) mesmo numa enxurrada grande de mensagens de uma vez só.
+const PAUSA_ENTRE_ENVIOS_MS = 3300;
 function dormir(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
 async function enviarTelegram(texto) {
@@ -70,4 +80,190 @@ async function enviarTelegram(texto) {
 // pra agrupar por AISP parecia inofensivo, mas o JavaScript tem uma regra
 // própria pra objetos comuns — quando as CHAVES são números (mesmo que como
 // string, tipo "85760"), ele reordena essas chaves em ordem NUMÉRICA
-// CRESCENTE automaticamente, ignorando tot
+// CRESCENTE automaticamente, ignorando totalmente a ordem em que foram
+// inseridas. Como as AISPs vão de 85760 (25 de Março, a 1ª da lista) até
+// 85741 (Feira da Madrugada, a última), essa reordenação automática INVERTIA
+// a sequência de envio: a 1ª área da lista (85760, maior número) virava a
+// ÚLTIMA mensagem enviada. Corrigido usando um Map em vez de objeto comum —
+// Map SEMPRE preserva a ordem de inserção, não importa o tipo da chave.
+function agruparPorArea(novos) {
+    var porAisp = new Map();
+    novos.forEach(function (n) {
+        if (!porAisp.has(n.aisp)) porAisp.set(n.aisp, { nome: n.nome, aisp: n.aisp, itens: [] });
+        porAisp.get(n.aisp).itens.push(n);
+    });
+    return Array.from(porAisp.values());
+}
+
+function abreviarAno(data) {
+    // dd/mm/aaaa -> dd/mm/aa — corta 2 caracteres da 1ª linha, que é a mais
+    // apertada pra caber numa linha só em telas de canal (mais estreitas que
+    // conversa direta — confirmado pelo usuário comparando os dois).
+    return String(data).replace(/\/\d{2}(\d{2})$/, "/$1");
+}
+
+function formatarLinhaEscala(n) {
+    // Ordem confirmada pelo usuário direto no site: "Efetivo Tot." é o total de
+    // vagas disponíveis pra marcar, e "Inscritos" é quantas já foram preenchidas
+    // — antes estava invertido na mensagem.
+    //
+    // CORREÇÃO 31/07/2026 (parte 4, a pedido do usuário): voltou pro formato
+    // com os emojis 🆔 (ID) e 🕐 (horário) — as tentativas anteriores de tirar
+    // esses emojis pra economizar espaço não foram o que o usuário queria
+    // manter. A única mudança que ficou pra ajudar a caber na 1ª linha foi o
+    // ano abreviado (dd/mm/aa em vez de dd/mm/aaaa), que sozinho já corta 2
+    // caracteres sem mudar o visual dos emojis.
+    return "📅 " + abreviarAno(n.data) + " 🆔 " + n.escalaId + " 🕐 " + n.horaIni + " x " + n.horaFim + "\n" +
+        "👥 Vagas: <b>" + (n.efetivoTotal || "?") + "</b>  |  Inscritos: " + (n.inscritos || "?") + "\n" +
+        "⏳ Limite Inscrição: " + (n.dataLimite || "?");
+}
+
+// O Telegram tem um limite físico de ~4096 caracteres por mensagem. Em vez de
+// cortar num número fixo de escalas, junta o MÁXIMO que couber de verdade
+// dentro desse limite, e só abre uma mensagem nova quando realmente não cabe
+// mais nada — assim, áreas com poucas escalas saem tudo numa mensagem só, e
+// só áreas com MUITAS escalas (que não cabem de jeito nenhum) viram 2+ mensagens.
+var LIMITE_SEGURO_CARACTERES = 3800; // margem abaixo do limite real de 4096
+function montarMensagensDoGrupo(grupo) {
+    var mensagens = [];
+    // CORREÇÃO 31/07/2026 (rodapé mais profissional, a pedido do usuário):
+    // trocado o texto casual/apressado por um tom institucional, com um link
+    // clicável de verdade ("saiba mais") que abre o sistema da PMESP direto —
+    // mesmo endereço que o robô já usa pra fazer login sozinho (LOGIN_URL).
+    // Escapado como HTML porque a mensagem inteira usa parse_mode "HTML".
+    var rodape = "\n\nMonitoramento em tempo real. Garanta sua inscrição utilizando o nosso robô: " +
+        "<a href=\"http://intranet.policiamilitar.sp.gov.br/\">saiba mais</a>.";
+    var partesTotal = 1;
+    // primeiro calcula quantas mensagens vão ser precisas, pra já numerar "parte X/Y"
+    (function calcularPartes() {
+        var tamanhoAtual = 0;
+        var partes = 1;
+        grupo.itens.forEach(function (n) {
+            var linha = formatarLinhaEscala(n) + "\n\n";
+            if (tamanhoAtual + linha.length > LIMITE_SEGURO_CARACTERES) { partes++; tamanhoAtual = 0; }
+            tamanhoAtual += linha.length;
+        });
+        partesTotal = partes;
+    })();
+
+    var parteAtual = 1;
+    var linhasAtuais = [];
+    var itensNaParte = 0;
+    function fecharParte() {
+        // CORREÇÃO 31/07/2026 (cabeçalho mais "profissional", a pedido do
+        // usuário): tirado o emoji 👀. 1ª linha só com a contagem (em negrito),
+        // 2ª linha com nome + AISP (sem negrito, sem emoji) — simulado e
+        // aprovado pelo usuário antes de aplicar de vez. A área com o nome
+        // mais longo cadastrado ("Volante Cenas Abertas de Uso") fica numa
+        // zona de risco de quebrar essa 2ª linha (~41 caracteres), mas as
+        // outras 17 áreas são bem mais curtas e devem caber numa linha só.
+        // CORREÇÃO 31/07/2026 (cabeçalho, ajuste fino a pedido do usuário):
+        // 2ª linha (nome + AISP) agora também em negrito, e o indicador de
+        // parte trocou de "— parte 2/3" (travessão + barra deitada) pra
+        // "(parte 2 | 3)" (parênteses + barra em pé com espaço) — visual mais
+        // limpo, testado e aprovado pelo usuário antes de aplicar.
+        var cabecalho = "<b>" + itensNaParte + " escala(s) nova(s)</b>\n" +
+            "<b>" + grupo.nome + " (AISP " + grupo.aisp + ")" +
+            (partesTotal > 1 ? " (parte " + parteAtual + " | " + partesTotal + ")" : "") +
+            "</b>\n\n";
+        mensagens.push(cabecalho + linhasAtuais.join("\n\n") + rodape);
+        parteAtual++;
+        linhasAtuais = [];
+        itensNaParte = 0;
+    }
+
+    var tamanhoAcumulado = 0;
+    grupo.itens.forEach(function (n) {
+        var linha = formatarLinhaEscala(n);
+        if (tamanhoAcumulado + linha.length + 2 > LIMITE_SEGURO_CARACTERES && linhasAtuais.length > 0) {
+            fecharParte();
+            tamanhoAcumulado = 0;
+        }
+        linhasAtuais.push(linha);
+        itensNaParte++;
+        tamanhoAcumulado += linha.length + 2;
+    });
+    if (linhasAtuais.length > 0) fecharParte();
+
+    return mensagens;
+}
+
+(async function main() {
+    var resultado;
+    try {
+        resultado = JSON.parse(fs.readFileSync(RESULTADO_PATH, "utf8"));
+    } catch (e) {
+        console.log("ℹ️ Nenhum resultado.json encontrado — nada pra notificar (provavelmente a checagem nem rodou).");
+        return;
+    }
+
+    if (resultado.erro) {
+        console.log("Notificando erro da checagem...");
+        // Escapa <, > e & — mensagens de erro costumam trazer stack trace de JS
+        // (ex: "<anonymous>"), e isso quebra o parser de HTML do Telegram se
+        // mandado cru, fazendo a notificação de erro falhar silenciosamente.
+        var erroEscapado = String(resultado.erro)
+            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+        await enviarTelegram("⚠️ O monitor de escalas deu erro: " + erroEscapado);
+        return;
+    }
+
+    var novos = resultado.novos || [];
+    var resultadoPorArea = resultado.resultadoPorArea || [];
+    var agora = resultado.agora || new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
+
+    var grupos = agruparPorArea(novos);
+    var totalMensagens = grupos.reduce(function (soma, g) { return soma + montarMensagensDoGrupo(g).length; }, 0);
+    console.log("📨 " + novos.length + " escala(s) nova(s) em " + grupos.length + " área(s) — vão sair em " + totalMensagens + " mensagem(ns) de novidades + 1 resumo.");
+
+    var primeiraMensagem = true;
+    for (const grupo of grupos) {
+        var mensagensDoGrupo = montarMensagensDoGrupo(grupo);
+        for (const msg of mensagensDoGrupo) {
+            if (!primeiraMensagem) await dormir(PAUSA_ENTRE_ENVIOS_MS);
+            primeiraMensagem = false;
+            await enviarTelegram(msg);
+        }
+    }
+
+    // ── Resumo, sempre enviado (ache ou não escala), com TODAS as áreas listadas ──
+    if (!primeiraMensagem) await dormir(PAUSA_ENTRE_ENVIOS_MS);
+    var totalGeral = resultadoPorArea.reduce(function (soma, a) { return soma + a.total; }, 0);
+
+    // "agora" vem no formato "dd/mm/aaaa, HH:mm:ss" (saída padrão de
+    // toLocaleString("pt-BR")) — separa em data e hora pra mostrar cada um
+    // com seu próprio ícone, numa linha só, separados por uma barra em pé.
+    var partesAgora = String(agora).split(", ");
+    var dataAgora = partesAgora[0] || agora;
+    var horaAgora = partesAgora[1] || "";
+
+    // CORREÇÃO 31/07/2026 (layout do resumo, a pedido do usuário, simulado e
+    // aprovado antes de aplicar): data/hora numa linha própria com ícones,
+    // "AISP(s)" no lugar de "área(s)" com o rótulo do módulo (MODULO_LABEL,
+    // configurável), troféu 🏆 no lugar do confete 🎉, "(avisos já enviados
+    // acima)." numa linha própria, número da AISP tirado da lista de áreas
+    // (só o nome), e negrito na linha INTEIRA de "Checagem concluída!", na
+    // linha INTEIRA de "Total: ...", e na linha INTEIRA do troféu (mas não em
+    // "(avisos já enviados acima)." — essa fica em texto normal).
+    var resumo = "<b>🔎 Checagem concluída!</b>\n" +
+        "📅 " + dataAgora + " | 🕐 " + horaAgora + "\n\n" +
+        "<b>Total: " + totalGeral + " escala(s) em " + resultadoPorArea.length + " AISP(s) [" + MODULO_LABEL + "]</b>\n\n" +
+        resultadoPorArea
+            .map(function (a) {
+                // "erro: true" = essa área falhou repetidamente e foi pulada nessa
+                // checagem (não é um "0" de verdade). "semTempo: true" = nem chegou
+                // a ser checada porque o orçamento de tempo do run acabou antes —
+                // sinaliza cada caso diferente pra não confundir com uma área que
+                // realmente não tem escala disponível.
+                var icone = a.erro ? "🔴" : (a.semTempo ? "⏭️" : (a.total > 0 ? "🟢" : "⚪"));
+                var sufixo = a.erro ? " (falhou nessa checagem, tentaremos de novo na próxima)"
+                    : (a.semTempo ? " (não deu tempo nessa checagem, será checada na próxima)" : "");
+                return icone + " " + a.nome + ": " + a.total + sufixo;
+            })
+            .join("\n") +
+        "\n\n" +
+        (novos.length > 0
+            ? ("<b>🏆 " + novos.length + " são NOVAS escala(s) desde a última checagem.</b>\n(avisos já enviados acima).")
+            : "Nenhuma novidade desde a última checagem.");
+    await enviarTelegram(resumo);
+})();
