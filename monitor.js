@@ -97,8 +97,36 @@ function carregarVistos() {
 }
 function salvarVistos(set) {
     var lista = Array.from(set);
-    // evita o arquivo crescer pra sempre — mantém só os últimos 2000 registros
+
+    // CORREÇÃO 01/08/2026 (a pedido do usuário, preocupado com o arquivo
+    // crescer pra sempre): antes, a única proteção era manter só os "últimos
+    // 2000 registros inseridos" — um corte arbitrário que podia descartar
+    // escalas FUTURAS ainda válidas (só porque foram inseridas mais cedo que
+    // outras) e gerar um aviso de "nova" duplicado quando elas reaparecessem.
+    // Agora, antes de qualquer coisa, remove as entradas cuja DATA já passou —
+    // essas nunca mais vão aparecer numa busca de novo (a pesquisa é sempre
+    // "de hoje pra frente"), então guardá-las não serve pra nada, só ocupa
+    // espaço à toa. Isso mantém o arquivo naturalmente do tamanho da janela de
+    // busca (hoje JANELA_DIAS=45 dias, ~500-600 registros no total das 18
+    // áreas), bem longe do limite de 2000.
+    var hojeSemHora = new Date();
+    hojeSemHora.setHours(0, 0, 0, 0);
+    lista = lista.filter(function (chave) {
+        var partes = chave.split("_");
+        var dataStr = partes[1]; // formato dd/mm/aaaa (veja onde "chave" é montada)
+        if (!dataStr) return true; // formato inesperado — mantém por segurança
+        var pedacos = dataStr.split("/");
+        if (pedacos.length !== 3) return true;
+        var dataEscala = new Date(Number(pedacos[2]), Number(pedacos[1]) - 1, Number(pedacos[0]));
+        if (isNaN(dataEscala.getTime())) return true;
+        return dataEscala >= hojeSemHora;
+    });
+
+    // Segurança extra (não deveria disparar na prática, já que a limpeza por
+    // data acima mantém o arquivo pequeno sozinha): se mesmo assim passar de
+    // 2000, corta os inseridos há mais tempo.
     if (lista.length > 2000) lista = lista.slice(lista.length - 2000);
+
     fs.writeFileSync(SEEN_PATH, JSON.stringify(lista, null, 0));
 }
 
@@ -643,11 +671,6 @@ async function pesquisarEscalas(browserContext, aisp, onErro) {
             var resultadoBusca = null;
             var ultimoErroAisp = null;
             for (var tentativaAisp = 1; tentativaAisp <= MAX_TENTATIVAS_AISP; tentativaAisp++) {
-                // IMPORTANTE (bug real corrigido): pesquisarEscalas pode lançar exceção
-                // (ex: timeout esperando o campo de AISP aparecer, por lentidão pontual
-                // do site) — antes isso derrubava a checagem INTEIRA e perdia o progresso
-                // de todas as outras AISPs. Agora captura aqui: se falhar, tenta de novo
-                // e, se mesmo assim continuar falhando, pula só essa AISP e segue o run.
                 try {
                     resultadoBusca = await pesquisarEscalas(context, aisp, tirarScreenshotErro);
                 } catch (e) {
@@ -657,11 +680,6 @@ async function pesquisarEscalas(browserContext, aisp, onErro) {
                     continue;
                 }
                 var completo = resultadoBusca.totalEsperado === null || resultadoBusca.linhas.length >= resultadoBusca.totalEsperado;
-                // Segurança extra: como TODA AISP agora roda logo depois do próprio login
-                // dela (login do zero por AISP), qualquer uma pode pegar aquela janela em
-                // que já vimos um bug real de preenchimento de campo falhar silenciosamente
-                // e voltar "0 registros" mesmo tendo escalas de verdade. Não aceita um "0"
-                // de primeira — confirma com mais uma tentativa antes de aceitar como real.
                 if (completo && resultadoBusca.totalEsperado === 0 && tentativaAisp === 1) {
                     console.log("   ℹ️ Veio com 0 registros na 1ª tentativa — confirmando com mais uma antes de aceitar (pode ser efeito do login ainda assentando)...");
                     continue;
