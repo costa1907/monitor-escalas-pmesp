@@ -8,7 +8,7 @@
 //     por escala — o Telegram limita a ~1 mensagem/segundo pro mesmo chat,
 //     então mandar uma por escala em runs com muitas novidades de uma vez
 //     estourava esse limite e várias mensagens ficavam pra trás silenciosamente);
-//   - um resumo final, sempre (ache ou não escala), com todas as áreas.
+//   - um resumo final, só quando tem escala nova de verdade.
 // Também tem espera entre envios + nova tentativa automática se o Telegram
 // recusar por excesso de mensagens (HTTP 429), pra não perder nada.
 // ─────────────────────────────────────────────────────────────────────────
@@ -40,7 +40,7 @@ const RESULTADO_PATH = path.join(__dirname, "resultado.json");
 const PAUSA_ENTRE_ENVIOS_MS = 3300;
 function dormir(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
-async function enviarTelegram(texto, silencioso) {
+async function enviarTelegram(texto) {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
         console.warn("⚠️ TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID não configurados — pulando envio.");
         return;
@@ -51,13 +51,7 @@ async function enviarTelegram(texto, silencioso) {
         var resp = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            // CORREÇÃO 02/08/2026 (a pedido do usuário): a mensagem continua
-            // sendo mandada e aparecendo normal no canal sempre — o que muda é
-            // o "disable_notification", que faz o Telegram NÃO tocar som/dar
-            // notificação no celular de quem está no canal quando é só uma
-            // repetição sem novidade real (silencioso=true). Quando tem escala
-            // nova de verdade, manda normal (com notificação).
-            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: texto, parse_mode: "HTML", disable_notification: !!silencioso })
+            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: texto, parse_mode: "HTML" })
         });
         var data = await resp.json().catch(() => ({}));
         if (data.ok) return true;
@@ -232,14 +226,20 @@ function montarMensagensDoGrupo(grupo) {
         }
     }
 
-    // ── Resumo, sempre enviado (ache ou não escala), com TODAS as áreas listadas ──
-    // CORREÇÃO 02/08/2026 (a pedido do usuário, versão final): a mensagem
-    // continua sendo mandada SEMPRE (o bot apagador cuida de remover a
-    // repetida quando não muda nada) — o que mudou é que ela vai SILENCIOSA
-    // (sem tocar notificação no celular) quando não tem escala nova, e
-    // NORMAL (com notificação) quando tem. Assim o usuário só é avisado de
-    // verdade quando há algo relevante, mas o histórico do canal continua
-    // completo.
+    // CORREÇÃO 02/08/2026 (a pedido do usuário, versão final — voltou atrás
+    // da tentativa de mandar "silencioso"): confirmado que disable_notification
+    // NÃO resolve, porque o Telegram continua marcando a conversa como "tem
+    // mensagem nova" (aquela bolinha/contador na lista de chats) mesmo pra
+    // mensagens silenciosas — só o som/alerta é suprimido, não o indicador
+    // visual. Como isso não atendia o pedido original (não incomodar quando
+    // não há novidade real), voltou a SÓ enviar o resumo quando realmente TEM
+    // escala nova. Sem escala nova, não manda nada — nem aparece indicador
+    // nenhum no canal.
+    if (novos.length === 0) {
+        console.log("ℹ️ Nenhuma escala nova nessa checagem — pulando o resumo (só notifica quando há novidade real).");
+        return;
+    }
+
     if (!primeiraMensagem) await dormir(PAUSA_ENTRE_ENVIOS_MS);
     var totalGeral = resultadoPorArea.reduce(function (soma, a) { return soma + a.total; }, 0);
 
@@ -275,8 +275,6 @@ function montarMensagensDoGrupo(grupo) {
             })
             .join("\n") +
         "\n\n" +
-        (novos.length > 0
-            ? ("<b>🏆 " + novos.length + " são NOVAS escala(s) desde a última checagem.</b>\n(avisos já enviados acima).")
-            : "Nenhuma novidade desde a última checagem.");
-    await enviarTelegram(resumo, novos.length === 0);
+        "<b>🏆 " + novos.length + " são NOVAS escala(s) desde a última checagem.</b>\n(avisos já enviados acima).";
+    await enviarTelegram(resumo);
 })();
