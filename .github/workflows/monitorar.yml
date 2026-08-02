@@ -1,12 +1,22 @@
 name: Monitorar Escalas PMESP
 
 on:
-  schedule:
-    # A cada 30 minutos. O GitHub pode atrasar um pouco em horários de pico,
-    # mas na prática costuma rodar perto disso. Ajuste o cron se quiser outro intervalo
-    # (ex: "*/60 * * * *" para de hora em hora).
-    - cron: "*/30 * * * *"
-  workflow_dispatch: {} # permite rodar manualmente pelo botão "Run workflow" no GitHub
+  # CORREÇÃO 01/08/2026 (a pedido do usuário): removido o gatilho "schedule"
+  # (agendamento interno do GitHub). Ele se mostrou pouco confiável na prática
+  # — chegou a ficar ~12h seguidas sem disparar nenhuma vez, mesmo configurado
+  # pra rodar a cada 30min (comportamento "melhor esforço" documentado do
+  # próprio GitHub, mais comum em repositórios com pouco tráfego). Pra
+  # contornar isso, foi configurado um serviço externo (cron-job.org) que chama
+  # o mesmo workflow via workflow_dispatch a cada 30min de fora do GitHub, de
+  # forma bem mais pontual. Manter os dois gatilhos ativos ao mesmo tempo
+  # arriscava disparos quase simultâneos (o "schedule" acordando por conta
+  # própria bem perto de um disparo do cron-job.org) — dois logins seguidos e
+  # rápidos no sistema da PMESP pareciam estar deixando o servidor deles
+  # instável, causando falha em cascata nas áreas seguintes de uma checagem.
+  # Removendo o "schedule", só sobra o workflow_dispatch (usado tanto pelo
+  # cron-job.org quanto pelo botão manual "Run workflow"), sem risco de
+  # sobreposição.
+  workflow_dispatch: {} # permite rodar manualmente pelo botão "Run workflow" no GitHub, e é o que o cron-job.org chama por fora
 
 # Necessário pra o workflow poder commitar o arquivo de "já avisados" de volta no repositório
 permissions:
@@ -171,6 +181,9 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          # Rótulo do módulo mostrado no resumo (ex: "[M1]"). Opcional — se não
+          # configurada aqui, o código já usa "M1" como padrão automaticamente.
+          MODULO_LABEL: ${{ vars.MODULO_LABEL }}
         run: stdbuf -oL -eL node notificar.js
 
       - name: Marcar job como falho (se algo deu errado)
