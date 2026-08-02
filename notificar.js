@@ -40,7 +40,7 @@ const RESULTADO_PATH = path.join(__dirname, "resultado.json");
 const PAUSA_ENTRE_ENVIOS_MS = 3300;
 function dormir(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
-async function enviarTelegram(texto) {
+async function enviarTelegram(texto, silencioso) {
     if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
         console.warn("⚠️ TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID não configurados — pulando envio.");
         return;
@@ -51,7 +51,13 @@ async function enviarTelegram(texto) {
         var resp = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: texto, parse_mode: "HTML" })
+            // CORREÇÃO 02/08/2026 (a pedido do usuário): a mensagem continua
+            // sendo mandada e aparecendo normal no canal sempre — o que muda é
+            // o "disable_notification", que faz o Telegram NÃO tocar som/dar
+            // notificação no celular de quem está no canal quando é só uma
+            // repetição sem novidade real (silencioso=true). Quando tem escala
+            // nova de verdade, manda normal (com notificação).
+            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: texto, parse_mode: "HTML", disable_notification: !!silencioso })
         });
         var data = await resp.json().catch(() => ({}));
         if (data.ok) return true;
@@ -227,6 +233,13 @@ function montarMensagensDoGrupo(grupo) {
     }
 
     // ── Resumo, sempre enviado (ache ou não escala), com TODAS as áreas listadas ──
+    // CORREÇÃO 02/08/2026 (a pedido do usuário, versão final): a mensagem
+    // continua sendo mandada SEMPRE (o bot apagador cuida de remover a
+    // repetida quando não muda nada) — o que mudou é que ela vai SILENCIOSA
+    // (sem tocar notificação no celular) quando não tem escala nova, e
+    // NORMAL (com notificação) quando tem. Assim o usuário só é avisado de
+    // verdade quando há algo relevante, mas o histórico do canal continua
+    // completo.
     if (!primeiraMensagem) await dormir(PAUSA_ENTRE_ENVIOS_MS);
     var totalGeral = resultadoPorArea.reduce(function (soma, a) { return soma + a.total; }, 0);
 
@@ -265,5 +278,5 @@ function montarMensagensDoGrupo(grupo) {
         (novos.length > 0
             ? ("<b>🏆 " + novos.length + " são NOVAS escala(s) desde a última checagem.</b>\n(avisos já enviados acima).")
             : "Nenhuma novidade desde a última checagem.");
-    await enviarTelegram(resumo);
+    await enviarTelegram(resumo, novos.length === 0);
 })();
