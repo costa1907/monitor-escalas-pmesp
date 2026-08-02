@@ -8,16 +8,32 @@
 // logo depois do envio da notificação, usando um bot e token PRÓPRIOS
 // (TELEGRAM_APAGADOR_TOKEN) — o mesmo TELEGRAM_CHAT_ID de sempre.
 //
-// COMO FUNCIONA: bots não têm como "listar o histórico" de um canal via API
-// (limitação do Bot API), mas TODO bot que é membro/admin de um canal recebe
-// as mensagens novas postadas dali em diante através de getUpdates — como
-// esse bot foi adicionado recentemente, ele já está recebendo as mensagens
-// de resumo assim que elas são postadas. Por isso essa limpeza só vale daqui
-// pra frente (não apaga resumos duplicados antigos, de antes do bot existir).
+// ⚠️ CORREÇÃO 02/08/2026 (bug real, confirmado pelo usuário vendo que nunca
+// apagava nada): a 1ª versão comparava as DUAS últimas mensagens vindas do
+// getUpdates() na MESMA execução — mas como o próprio script "confirma"
+// (consome) as atualizações no final de CADA execução pra não reprocessar,
+// na execução seguinte a mensagem anterior já tinha sumido da fila do
+// Telegram, sobrando só a mensagem nova pra comparar (e com uma só, não tem
+// como comparar nada — por isso nunca apagava). Corrigido guardando o
+// último resumo já visto num arquivo próprio (ultimo_resumo.json, commitado
+// no repositório, do mesmo jeito que o seen.json já faz) — assim SEMPRE tem
+// o resumo anterior disponível pra comparar, não importa quando rodar.
 // ─────────────────────────────────────────────────────────────────────────
+
+const fs = require("fs");
+const path = require("path");
 
 const TOKEN = process.env.TELEGRAM_APAGADOR_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const ESTADO_PATH = path.join(__dirname, "ultimo_resumo.json");
+
+function carregarEstadoAnterior() {
+    try { return JSON.parse(fs.readFileSync(ESTADO_PATH, "utf8")); }
+    catch (e) { return null; }
+}
+function salvarEstado(estado) {
+    fs.writeFileSync(ESTADO_PATH, JSON.stringify(estado, null, 0));
+}
 
 async function chamarApi(metodo, params) {
     var url = "https://api.telegram.org/bot" + TOKEN + "/" + metodo;
@@ -59,22 +75,29 @@ function semDataHora(texto) {
         .map(function (u) { return u.channel_post; })
         .sort(function (a, b) { return a.message_id - b.message_id; });
 
-    console.log("📋 " + resumos.length + " mensagem(ns) de resumo encontrada(s) nas atualizações recentes.");
+    console.log("📋 " + resumos.length + " mensagem(ns) de resumo nova(s) nas atualizações desde a última vez.");
 
-    if (resumos.length >= 2) {
-        var anterior = resumos[resumos.length - 2];
-        var atual = resumos[resumos.length - 1];
-        if (semDataHora(anterior.text) === semDataHora(atual.text)) {
-            console.log("🗑️ Resumo repetido (mesmo conteúdo, só mudou a data/hora) — apagando o mais antigo (ID " + anterior.message_id + ")...");
-            var del = await chamarApi("deleteMessage", { chat_id: CHAT_ID, message_id: anterior.message_id });
+    if (resumos.length > 0) {
+        var maisRecente = resumos[resumos.length - 1];
+        var estadoAnterior = carregarEstadoAnterior();
+
+        if (estadoAnterior && semDataHora(estadoAnterior.texto) === semDataHora(maisRecente.text)) {
+            console.log("🗑️ Resumo repetido (mesmo conteúdo do anterior, só mudou a data/hora) — apagando o mais antigo (ID " + estadoAnterior.message_id + ")...");
+            var del = await chamarApi("deleteMessage", { chat_id: CHAT_ID, message_id: estadoAnterior.message_id });
             console.log(del.ok ? "✅ Apagado com sucesso." : "❌ Falha ao apagar: " + JSON.stringify(del));
-        } else {
+        } else if (estadoAnterior) {
             console.log("ℹ️ O resumo mudou de conteúdo desde o anterior — mantendo os dois.");
+        } else {
+            console.log("ℹ️ Primeira vez rodando (ou arquivo de estado ainda não existia) — nada pra comparar ainda.");
         }
+
+        salvarEstado({ message_id: maisRecente.message_id, texto: maisRecente.text });
     }
 
     // "Confirma" as atualizações recebidas (avança o offset) pra não ficar
-    // reprocessando as mesmas mensagens de novo em cada execução.
+    // reprocessando as mesmas mensagens de novo em cada execução. Isso é
+    // seguro agora porque o "estado anterior" não depende mais dessa fila —
+    // já foi salvo no arquivo acima.
     if (data.result.length > 0) {
         var ultimoId = data.result[data.result.length - 1].update_id;
         await chamarApi("getUpdates", { offset: ultimoId + 1 });
