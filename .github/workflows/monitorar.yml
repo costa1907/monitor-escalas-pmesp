@@ -36,13 +36,18 @@ jobs:
     # limite do job (ver ORCAMENTO_MAX_MINUTOS em monitor.js).
     timeout-minutes: 40
     steps:
+      # CORREÇÃO 02/08/2026: actions (checkout/setup-node/upload-artifact) e o
+      # Node do próprio script atualizados de v4/Node 20 pra v7/Node 24 — o
+      # GitHub estava avisando que Node 20 seria descontinuado nas actions.
+      # Sem mudança de comportamento esperada (o código só usa JS padrão, que
+      # já funciona desde o Node 18).
       - name: Baixar código do repositório
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Configurar Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: "20"
+          node-version: "24"
 
       - name: Instalar dependências
         run: npm install
@@ -161,7 +166,7 @@ jobs:
         # como "sucesso" (porque as outras AISPs deram certo). Sem isso, essas
         # screenshots nunca seriam enviadas como artefato.
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: erro-screenshots
           path: erro*.png
