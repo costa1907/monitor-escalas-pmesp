@@ -186,6 +186,17 @@ jobs:
           MODULO_LABEL: ${{ vars.MODULO_LABEL }}
         run: stdbuf -oL -eL node notificar.js
 
+      - name: Limpar resumo duplicado (2º bot)
+        # Bot separado (admin no mesmo canal) que apaga a mensagem de resumo
+        # anterior quando ela é idêntica à que acabou de ser enviada (mesmos
+        # números, só a data/hora muda) — evita acumular resumos repetidos
+        # "Nenhuma novidade" no canal. Ver dedupe_resumo.js.
+        if: always()
+        env:
+          TELEGRAM_APAGADOR_TOKEN: ${{ secrets.TELEGRAM_APAGADOR_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: node dedupe_resumo.js
+
       - name: Marcar job como falho (se algo deu errado)
         if: steps.vpn.outcome == 'failure' || steps.checagem.outcome == 'failure'
         run: exit 1
