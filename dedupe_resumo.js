@@ -6,7 +6,7 @@
 //
 // Roda como um passo a mais no MESMO workflow do monitor.js/notificar.js,
 // logo depois do envio da notificação, usando um bot e token PRÓPRIOS
-// (TELEGRAM_BOT_TOKEN_2) — o mesmo TELEGRAM_CHAT_ID de sempre.
+// (TELEGRAM_APAGADOR_TOKEN) — o mesmo TELEGRAM_CHAT_ID de sempre.
 //
 // COMO FUNCIONA: bots não têm como "listar o histórico" de um canal via API
 // (limitação do Bot API), mas TODO bot que é membro/admin de um canal recebe
@@ -16,7 +16,7 @@
 // pra frente (não apaga resumos duplicados antigos, de antes do bot existir).
 // ─────────────────────────────────────────────────────────────────────────
 
-const TOKEN = process.env.TELEGRAM_BOT_TOKEN_2;
+const TOKEN = process.env.TELEGRAM_APAGADOR_TOKEN;
 const CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
 async function chamarApi(metodo, params) {
@@ -39,7 +39,7 @@ function semDataHora(texto) {
 
 (async function main() {
     if (!TOKEN || !CHAT_ID) {
-        console.log("ℹ️ TELEGRAM_BOT_TOKEN_2 / TELEGRAM_CHAT_ID não configurados — pulando.");
+        console.log("ℹ️ TELEGRAM_APAGADOR_TOKEN / TELEGRAM_CHAT_ID não configurados — pulando.");
         return;
     }
 
