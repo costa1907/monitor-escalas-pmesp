@@ -551,9 +551,26 @@ async function pesquisarEscalas(page1, aisp, onErro) {
     var paginasLidas = 0;
     var MAX_PAGINAS = 30; // teto de segurança — uma AISP real não deveria chegar nem perto disso
 
+    // ⚠️ CORREÇÃO 05/08/2026 (bug real, diagnosticado em log de execução): o
+    // robô decidia "a página virou" comparando se a leitura ficou DIFERENTE da
+    // anterior (fingerprint). O problema é que havia um caminho que aceitava
+    // uma leitura diferente SEM confirmar que ela era estável — e aí engolia
+    // qualquer coisa: a mesma página re-renderizada (virava página duplicada) ou
+    // a grade momentaneamente vazia (virava "página com 0 escalas"). No log:
+    // "25 de Março" e "Liberdade" pegaram a página 1 duas vezes (10 duplicatas
+    // removidas em cada, terminando 40/42 e 20/22), e "Sé" aceitou uma página
+    // vazia e parou em 20/33.
+    //
+    // Agora a decisão é por um sinal direto e sem ambiguidade: só é página nova
+    // se trouxer pelo menos UMA escala com ID que ainda não foi visto nesta
+    // AISP. Página repetida (só IDs conhecidos) e grade vazia (nenhum ID) são
+    // simplesmente ignoradas — o robô continua esperando a página de verdade.
+    var idsVistosNestaAisp = new Set();
+
     while (paginasLidas < MAX_PAGINAS) {
         paginasLidas++;
         resultados = resultados.concat(linhasAtuais);
+        linhasAtuais.forEach(function (l) { idsVistosNestaAisp.add(l.escalaId); });
         console.log("   página " + paginasLidas + ": " + linhasAtuais.length + " escala(s)" +
             (linhasAtuais.length > 0 ? " — ex: escala " + linhasAtuais[0].escalaId + " em " + linhasAtuais[0].data : "") +
             (totalEsperado !== null ? " (capturado até agora: " + resultados.length + "/" + totalEsperado + ")" : ""));
@@ -568,44 +585,33 @@ async function pesquisarEscalas(page1, aisp, onErro) {
         });
         if (!temProxima) break;
 
-        // O clique em "Próxima" às vezes não "pega" na primeira (flakiness do
-        // postback do GeneXus) — em vez de desistir da AISP inteira no primeiro
-        // clique sem efeito, tenta de novo até 3 vezes antes de encerrar.
-        //
-        // Nota (05/08/2026): tentamos aumentar essa espera de 27 pra 50 ciclos
-        // achando que o aviso "Clique em 'Próxima' não teve efeito" era só a
-        // detecção desistindo cedo. Não resolveu (o aviso continuou aparecendo)
-        // e só somava tempo em cada área, então foi revertido pro valor original.
+        // Procura por uma leitura que traga pelo menos um ID inédito. Se em ~9s
+        // nada novo aparecer, tenta clicar de novo (até 3 vezes no total).
+        async function _lerPaginaNovaSeChegou() {
+            var linhas = await embFrameHandle.evaluate(_lerLinhasGrade);
+            if (!linhas || linhas.length === 0) return null; // grade vazia/em transição
+            var temIdNovo = linhas.some(function (l) { return !idsVistosNestaAisp.has(l.escalaId); });
+            return temIdNovo ? linhas : null; // só IDs conhecidos = página repetida
+        }
+
         var mudou = false;
         for (var tentativaClique = 0; tentativaClique < 3 && !mudou; tentativaClique++) {
+            // Antes de RE-clicar, confere se a página não chegou "atrasada" — sem
+            // isso, um clique extra em cima de uma virada que já estava a caminho
+            // podia PULAR uma página inteira (e a AISP voltava incompleta).
+            if (tentativaClique > 0) {
+                var leituraAtrasada = await _lerPaginaNovaSeChegou();
+                if (leituraAtrasada) { linhasAtuais = leituraAtrasada; mudou = true; break; }
+            }
+
             await clicarProximaPaginaGX(embFrameHandle);
 
-            // Mesma proteção contra "estado passageiro" usada na busca inicial:
-            // só aceita a página nova como estável depois de ler a MESMA coisa
-            // 2 vezes seguidas — evita travar num instante de transição vazio.
-            var candFp = null;
-            var candLinhas = null;
-            for (var tentativa = 0; tentativa < 27; tentativa++) {
+            for (var tentativa = 0; tentativa < 30; tentativa++) {
                 await page1.waitForTimeout(300);
-                var novasLinhas = await embFrameHandle.evaluate(_lerLinhasGrade);
-                var novoFingerprint = JSON.stringify(novasLinhas);
-                if (novoFingerprint === fingerprintAtual) continue;
-                if (novoFingerprint === candFp) {
-                    linhasAtuais = novasLinhas;
-                    fingerprintAtual = novoFingerprint;
-                    mudou = true;
-                    break;
-                }
-                candFp = novoFingerprint;
-                candLinhas = novasLinhas;
+                var leitura = await _lerPaginaNovaSeChegou();
+                if (leitura) { linhasAtuais = leitura; mudou = true; break; }
             }
-            if (!mudou && candLinhas !== null) {
-                // não deu tempo de confirmar 2x, mas teve pelo menos uma leitura
-                // diferente — melhor aproveitar do que nada
-                linhasAtuais = candLinhas;
-                fingerprintAtual = candFp;
-                mudou = true;
-            }
+
             if (!mudou && tentativaClique < 2) {
                 console.log("   ⚠️ Clique em 'Próxima' não teve efeito — tentando de novo (tentativa " + (tentativaClique + 2) + "/3)...");
             }
