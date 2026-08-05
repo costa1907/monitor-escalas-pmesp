@@ -571,6 +571,19 @@ async function pesquisarEscalas(page1, aisp, onErro) {
         // O clique em "Próxima" às vezes não "pega" na primeira (flakiness do
         // postback do GeneXus) — em vez de desistir da AISP inteira no primeiro
         // clique sem efeito, tenta de novo até 3 vezes antes de encerrar.
+        //
+        // ⚠️ CORREÇÃO 02/08/2026 (bug real, visível em log de execução): o aviso
+        // "Clique em 'Próxima' não teve efeito" aparecia em 100% das áreas com
+        // 2+ páginas, SEMPRE logo na 1ª virada de página — e isso não era o
+        // clique falhando de verdade, era a DETECÇÃO desistindo cedo demais. A
+        // 1ª troca de página é consistentemente mais lenta que as seguintes, e
+        // o prazo antigo (27 ciclos) acabava antes de conseguir confirmar a
+        // leitura 2x seguidas. Aí o código reclicava "Próxima" achando que
+        // tinha falhado — e esse clique extra às vezes PULAVA uma página
+        // inteira, o que explica as áreas que voltavam incompletas (10/30,
+        // 10/21...) e precisavam refazer a busca do zero, gastando mais tempo
+        // ainda. Corrigido: prazo maior (50 ciclos = ~15s), e assim que uma
+        // leitura nova estabiliza ela é aceita, sem reclicar à toa.
         var mudou = false;
         for (var tentativaClique = 0; tentativaClique < 3 && !mudou; tentativaClique++) {
             await clicarProximaPaginaGX(embFrameHandle);
@@ -580,7 +593,7 @@ async function pesquisarEscalas(page1, aisp, onErro) {
             // 2 vezes seguidas — evita travar num instante de transição vazio.
             var candFp = null;
             var candLinhas = null;
-            for (var tentativa = 0; tentativa < 27; tentativa++) {
+            for (var tentativa = 0; tentativa < 50; tentativa++) {
                 await page1.waitForTimeout(300);
                 var novasLinhas = await embFrameHandle.evaluate(_lerLinhasGrade);
                 var novoFingerprint = JSON.stringify(novasLinhas);
@@ -710,15 +723,16 @@ async function pesquisarEscalas(page1, aisp, onErro) {
                     continue;
                 }
                 var completo = resultadoBusca.totalEsperado === null || resultadoBusca.linhas.length >= resultadoBusca.totalEsperado;
-                // Segurança extra: como TODA AISP agora roda logo depois do próprio login
-                // dela (login do zero por AISP), qualquer uma pode pegar aquela janela em
-                // que já vimos um bug real de preenchimento de campo falhar silenciosamente
-                // e voltar "0 registros" mesmo tendo escalas de verdade. Não aceita um "0"
-                // de primeira — confirma com mais uma tentativa antes de aceitar como real.
-                if (completo && resultadoBusca.totalEsperado === 0 && tentativaAisp === 1) {
-                    console.log("   ℹ️ Veio com 0 registros na 1ª tentativa — confirmando com mais uma antes de aceitar (pode ser efeito do login ainda assentando)...");
-                    continue;
-                }
+                // ⚠️ CORREÇÃO 02/08/2026: removida a reconfirmação de "0 registros".
+                // Ela foi criada quando cada AISP fazia login do zero — nessa janela
+                // logo depois do login, já vimos o preenchimento do campo falhar
+                // silenciosamente e voltar "0" com escalas existindo de verdade. Como
+                // agora o login é feito UMA VEZ SÓ, bem antes (e a sessão já está
+                // assentada quando as áreas rodam), esse risco praticamente sumiu — e
+                // a reconfirmação virou puro desperdício: no último run real, ela
+                // refez a busca inteira à toa em 6 áreas genuinamente vazias
+                // (~2min30 perdidos). Se um dia voltar a aparecer "0" falso, dá pra
+                // reativar essa proteção.
                 if (completo) break;
                 if (tentativaAisp < MAX_TENTATIVAS_AISP) {
                     console.log("⚠️ Só capturei " + resultadoBusca.linhas.length + "/" + resultadoBusca.totalEsperado +
