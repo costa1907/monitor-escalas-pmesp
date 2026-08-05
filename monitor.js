@@ -26,13 +26,18 @@
 // workflow salva screenshots (erro*.png, uma por falha) como artefato pra
 // gente debugar junto olhando exatamente onde travou.
 //
-// ⚠️ CORREÇÃO 31/07/2026 (confirmada em log de execução real): a 1ª AISP do
-// run sempre abria a tela de pesquisa certinho, mas voltar pra essa tela pra
-// checar a 2ª AISP em diante (reaproveitando a mesma popup) falhava 100% das
-// vezes, travando o run inteiro até ser cancelado por timeout sem notificar
-// nada. Agora CADA AISP faz login do zero, numa popup só dela — mais lento,
-// mas é a única sequência que já se provou 100% confiável num run real. Ver
-// pesquisarEscalas() e o "orçamento de tempo" em main() pra mais detalhes.
+// ⚠️ CORREÇÃO 02/08/2026 (a descoberta que resolveu de vez o bug antigo):
+// durante muito tempo, voltar pra tela de escalas pra checar a 2ª AISP em
+// diante falhava 100% das vezes, e a suspeita era que "a sessão do login
+// travava" — por isso a versão anterior refazia login do zero pra CADA área
+// (funcionava, mas custava ~15-20s a mais por AISP). Analisando o robô
+// Tampermonkey do próprio usuário (que troca de AISP há muito tempo SEM
+// relogar), descobrimos a causa real: o culpado era o MENU EM CASCATA (que
+// fica com estado interno "grudado" depois do primeiro uso), não a sessão.
+// A solução é a mesma que o Tampermonkey usa: navegar DIRETO pra URL da tela
+// (URL_TELA_ESCALAS), pulando o menu. Agora o login é feito UMA VEZ SÓ por
+// run, e cada AISP só renavega pela URL — bem mais rápido e igualmente
+// confiável. Ver abrirTelaPesquisaDelegada() e main() pra detalhes.
 // ─────────────────────────────────────────────────────────────────────────
 
 const { chromium } = require("playwright");
@@ -82,6 +87,17 @@ const AISPS_MONITORADAS = process.env.PMESP_AISP
     : TODAS_AREAS_DELEGADA.map(a => a.aisp);
 
 const LOGIN_URL = process.env.LOGIN_URL || "http://intranet.policiamilitar.sp.gov.br/";
+
+// ⚠️ DESCOBERTA 02/08/2026 (a partir do robô Tampermonkey do próprio usuário,
+// que usa isso há muito tempo com sucesso): dá pra chegar na tela de escalas
+// SEM passar pelo menu em cascata (SIRH → Escala → Inscrever PM), navegando
+// direto pra essa URL. O parâmetro codificado carrega os códigos internos de
+// Sistema/SubSistema/Rotina que o chama_rotina.aspx usa pra saber qual tela
+// abrir. Isso resolve de vez o bug antigo: o problema NUNCA foi a sessão do
+// login expirando — era o MENU que travava depois do primeiro uso. Como essa
+// URL pula o menu inteiro, dá pra reaproveitar a mesma sessão entre AISPs.
+const URL_TELA_ESCALAS = process.env.URL_TELA_ESCALAS ||
+    "http://sistemasadmin.intranet.policiamilitar.sp.gov.br/Escala/chama_rotina.aspx?l+til9EMFvFgCT+SnDWWNQ==";
 
 const SEEN_PATH = path.join(__dirname, "seen.json");
 const JANELA_DIAS = 45; // quantos dias a partir de hoje ele pesquisa (data início/fim do filtro)
@@ -247,41 +263,34 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
     }
 }
 
-// ── Navega até a tela de pesquisa "Inscrever PM na Escala Ativ Delegada",
-// numa popup RECÉM-LOGADA (veja pesquisarEscalas — cada AISP agora usa sua
-// própria popup nova, feita via login do zero).
+// ── Abre a tela de pesquisa "Inscrever PM na Escala Ativ Delegada".
 //
-// ⚠️ CORREÇÃO 31/07/2026 (bug real, grave, confirmado em log de execução real):
-// a versão anterior tentava reaproveitar a MESMA popup entre AISPs diferentes —
-// primeiro só reclicando o menu em cascata (SIRH → Escala → Inscrever PM), depois
-// (numa correção anterior) dando page1.reload() antes de reclicar. NENHUMA das
-// duas formas funcionou de verdade: nos logs reais, a 1ª AISP do run sempre abria
-// a tela certinho, mas a partir da 2ª AISP o campo #vIDFAGPGEOSST simplesmente
-// nunca mais reaparecia — 100% de falha, em TODAS as tentativas (9 tentativas
-// por AISP, ~4min perdidos cada), até o job inteiro ser cancelado por timeout
-// antes de terminar nem metade das áreas, sem notificar nada e sem salvar
-// progresso. A ÚNICA sequência comprovada como 100% confiável no log real foi:
-// login do zero → popup nova → hover no menu → tela de pesquisa aparece. Por
-// isso agora essa função só faz a parte do menu — quem garante a popup "limpa"
-// é fazerLoginEAbrirDelegada, chamada do zero pra CADA AISP em pesquisarEscalas.
+// ⚠️ CORREÇÃO 02/08/2026 (a partir do robô Tampermonkey do próprio usuário):
+// agora navega DIRETO pra URL da tela (URL_TELA_ESCALAS), em vez de percorrer
+// o menu em cascata (SIRH → Escala → Inscrever PM).
+//
+// HISTÓRICO DO BUG (pra não repetir o erro): a versão anterior usava o menu, e
+// isso funcionava perfeitamente na 1ª AISP mas falhava 100% das vezes da 2ª em
+// diante — o campo #vIDFAGPGEOSST simplesmente nunca mais reaparecia. Por muito
+// tempo a suspeita foi "a sessão do login trava" (por isso a solução anterior
+// era refazer login do zero pra CADA AISP, o que funcionava mas custava
+// ~15-20s a mais por área). Analisando o robô Tampermonkey do usuário, que faz
+// isso há muito tempo SEM relogar, descobrimos a verdade: o problema nunca foi
+// a sessão — era o MENU EM CASCATA que fica com estado interno "grudado"
+// depois do primeiro uso (comportamento comum em menus legados baseados em
+// onmouseover). Navegando direto pela URL, o menu nem entra na história, e a
+// mesma sessão pode ser reaproveitada à vontade entre AISPs.
 async function abrirTelaPesquisaDelegada(page1) {
-    // Menu em cascata: passa o mouse em "SIRH" → abre submenu "Escala" → passa o
-    // mouse nele → abre o submenu final com "Inscrever PM na Escala Ativ Delegada".
-    // Precisa do hover em cada nível (não é link direto, é JS de onmouseover).
-    await page1.locator("td.ThemeClassicMainFolderText", { hasText: "SIRH" }).hover({ timeout: 15000 });
-    await page1.waitForTimeout(500);
-    await page1.getByText("Escala", { exact: true }).first().hover({ timeout: 10000 });
-    await page1.waitForTimeout(500);
-    await page1.getByRole("cell", { name: "Inscrever PM na Escala Ativ Delegada" }).click({ timeout: 20000 });
-    // O robô Tampermonkey usa 1500ms aqui de propósito (DELAY_TRAVA_VE_CLIQUE_MS) —
-    // o comentário original dele já avisa que esse postback específico demora mais
-    // que os outros, então mantém esse valor testado em vez de um menor.
+    await page1.goto(URL_TELA_ESCALAS, { waitUntil: "domcontentloaded", timeout: 30000 });
+    // O robô Tampermonkey usa 1500ms de propósito depois de chegar nessa tela
+    // (DELAY_TRAVA_VE_CLIQUE_MS) — o comentário original dele já avisa que esse
+    // carregamento demora mais que os outros, então mantém esse valor testado.
     await page1.waitForTimeout(1500);
     await page1.waitForLoadState("networkidle", { timeout: 3000 }).catch(() => {});
 
     // Tela de "declaração de apto" — só costuma aparecer às vezes / na primeira
-    // vez de cada popup nova. Tenta com timeout curto; se não achar, segue sem
-    // erro (custa no máximo 3s à toa quando não aparece, o que é aceitável).
+    // vez da sessão. Tenta com timeout curto; se não achar, segue sem erro
+    // (custa no máximo 3s à toa quando não aparece, o que é aceitável).
     try {
         var embFrameApto = page1.frameLocator('iframe[name="Embpage"]');
         await embFrameApto.locator("#vAPTO").check({ timeout: 3000 });
@@ -291,6 +300,8 @@ async function abrirTelaPesquisaDelegada(page1) {
     } catch (e) {
         // ok, não apareceu dessa vez — segue o fluxo
     }
+
+    return page1;
 }
 
 // ── Lê as linhas da grade atual (dentro do frame Embpage) ──────────────────
@@ -406,26 +417,24 @@ async function clicarProcurarGX(frame) {
 // num estado transitório (ex: "[]" ainda carregando) que já diferia de null —
 // fazendo o código aceitar uma leitura vazia/incompleta como se already fosse o
 // resultado final, mesmo a busca ainda não tendo terminado de verdade.
-async function pesquisarEscalas(browserContext, aisp, onErro) {
+async function pesquisarEscalas(page1, aisp, onErro) {
     console.log("🔎 Pesquisando " + _nomeDaAisp(aisp) + " (AISP " + aisp + ")...");
 
     var dataIni = formatarDataBR(hoje());
     var dataFim = formatarDataBR(new Date(hoje().getTime() + JANELA_DIAS * 24 * 60 * 60 * 1000));
 
-    // ⚠️ CORREÇÃO 31/07/2026: cada AISP agora faz LOGIN DO ZERO, numa popup nova
-    // só dela — em vez de reaproveitar uma popup entre AISPs (que nunca funcionou
-    // de forma confiável, ver comentário em abrirTelaPesquisaDelegada). Mais lento
-    // por AISP (~15-20s a mais de login), mas é a única sequência 100% confiável
-    // que já vimos rodando de verdade. Também tira screenshot de diagnóstico se
-    // falhar de novo mesmo assim, pra dar pra investigar direito da próxima vez.
-    var page1 = null;
+    // ⚠️ CORREÇÃO 02/08/2026: agora recebe a MESMA página já logada (uma sessão
+    // só pro run inteiro) e só renavega pra tela de escalas pela URL direta a
+    // cada AISP — antes cada área fazia login do zero (~15-20s a mais por área),
+    // porque acreditávamos que a sessão travava. Descobrimos pelo robô
+    // Tampermonkey do usuário que o culpado era o MENU, não a sessão (ver
+    // comentário em abrirTelaPesquisaDelegada).
     var embFrame = null;
     var embFrameHandle = null;
     var ultimoErroAbertura = null;
     var MAX_TENTATIVAS_ABERTURA = 2;
     for (var tentativaAbertura = 1; tentativaAbertura <= MAX_TENTATIVAS_ABERTURA; tentativaAbertura++) {
         try {
-            page1 = await fazerLoginEAbrirDelegada(browserContext, onErro);
             await abrirTelaPesquisaDelegada(page1);
             embFrame = page1.frameLocator('iframe[name="Embpage"]');
             // IMPORTANTE (bug real corrigido): pegar a referência bruta do frame (via
@@ -446,14 +455,13 @@ async function pesquisarEscalas(browserContext, aisp, onErro) {
             ultimoErroAbertura = e;
             console.log("   ⚠️ Não consegui abrir a tela de pesquisa pra AISP " + aisp + " (tentativa " + tentativaAbertura + "/" + MAX_TENTATIVAS_ABERTURA + "): " + e.message);
             if (typeof onErro === "function") await onErro(page1, "aisp_" + aisp + "_t" + tentativaAbertura);
-            if (page1) { await page1.close().catch(() => {}); page1 = null; }
         }
     }
     if (!embFrameHandle) {
         throw ultimoErroAbertura || new Error("Não consegui abrir a tela de pesquisa pra AISP " + aisp + " depois de " + MAX_TENTATIVAS_ABERTURA + " tentativas.");
     }
 
-  try {
+  {
     // Mesmo com o campo já visível, a API interna do GeneXus (window.gx / gx.O)
     // pode levar um instante a mais pra ficar pronta — espera de verdade em vez de
     // confiar em tempo fixo, já que preencherCampoGX depende dela.
@@ -612,11 +620,6 @@ async function pesquisarEscalas(browserContext, aisp, onErro) {
     }
 
     return { linhas: resultadosSemDuplicata, totalEsperado: totalEsperado };
-  } finally {
-    // Sempre fecha a popup dessa AISP, dê certo ou não — cada AISP tem a sua
-    // própria (login do zero), então não fechar acumularia uma popup aberta
-    // por AISP até o fim do run inteiro.
-    if (page1) await page1.close().catch(() => {});
   }
 }
 
@@ -651,6 +654,13 @@ async function pesquisarEscalas(browserContext, aisp, onErro) {
     function minutosDecorridos() { return (Date.now() - INICIO_MS) / 60000; }
 
     var context = await browser.newContext({ viewport: { width: 1600, height: 1000 } });
+
+    // ⚠️ CORREÇÃO 02/08/2026: login feito UMA VEZ SÓ pro run inteiro. Antes era
+    // um login por AISP (18 logins!), porque acreditávamos que a sessão travava
+    // entre áreas — descobrimos pelo robô Tampermonkey do usuário que o culpado
+    // era o menu em cascata, não a sessão (ver abrirTelaPesquisaDelegada). Isso
+    // economiza ~15-20s por área (~5 min no run completo de 18 áreas).
+    var paginaSessao = null;
     var resultadoPorArea = []; // { aisp, nome, total } — TODAS as áreas verificadas, mesmo com 0
     try {
         var MAX_TENTATIVAS_AISP = 2; // se a paginação ficar devendo escalas (comparado ao Total de
@@ -671,15 +681,36 @@ async function pesquisarEscalas(browserContext, aisp, onErro) {
             var resultadoBusca = null;
             var ultimoErroAisp = null;
             for (var tentativaAisp = 1; tentativaAisp <= MAX_TENTATIVAS_AISP; tentativaAisp++) {
+                // IMPORTANTE (bug real corrigido): pesquisarEscalas pode lançar exceção
+                // (ex: timeout esperando o campo de AISP aparecer, por lentidão pontual
+                // do site) — antes isso derrubava a checagem INTEIRA e perdia o progresso
+                // de todas as outras AISPs. Agora captura aqui: se falhar, tenta de novo
+                // e, se mesmo assim continuar falhando, pula só essa AISP e segue o run.
                 try {
-                    resultadoBusca = await pesquisarEscalas(context, aisp, tirarScreenshotErro);
+                    // Garante que existe uma sessão viva: loga na 1ª vez, e refaz o
+                    // login se a página tiver morrido (ex: a sessão realmente expirou
+                    // depois de muito tempo, ou o site derrubou a conexão). Como isso
+                    // só acontece em caso de problema, o normal é logar uma vez só.
+                    if (!paginaSessao || paginaSessao.isClosed()) {
+                        console.log("🔑 Fazendo login" + (paginaSessao ? " de novo (a sessão anterior caiu)" : "") + "...");
+                        paginaSessao = await fazerLoginEAbrirDelegada(context, tirarScreenshotErro);
+                    }
+                    resultadoBusca = await pesquisarEscalas(paginaSessao, aisp, tirarScreenshotErro);
                 } catch (e) {
                     ultimoErroAisp = e;
                     console.log("   ❌ Falha ao pesquisar AISP " + aisp + " (tentativa " + tentativaAisp + "/" + MAX_TENTATIVAS_AISP + "): " + e.message);
                     resultadoBusca = null;
+                    // Se falhou, descarta a sessão atual — a próxima tentativa vai
+                    // logar do zero, cobrindo o caso de a sessão ter expirado mesmo.
+                    if (paginaSessao) { await paginaSessao.close().catch(() => {}); paginaSessao = null; }
                     continue;
                 }
                 var completo = resultadoBusca.totalEsperado === null || resultadoBusca.linhas.length >= resultadoBusca.totalEsperado;
+                // Segurança extra: como TODA AISP agora roda logo depois do próprio login
+                // dela (login do zero por AISP), qualquer uma pode pegar aquela janela em
+                // que já vimos um bug real de preenchimento de campo falhar silenciosamente
+                // e voltar "0 registros" mesmo tendo escalas de verdade. Não aceita um "0"
+                // de primeira — confirma com mais uma tentativa antes de aceitar como real.
                 if (completo && resultadoBusca.totalEsperado === 0 && tentativaAisp === 1) {
                     console.log("   ℹ️ Veio com 0 registros na 1ª tentativa — confirmando com mais uma antes de aceitar (pode ser efeito do login ainda assentando)...");
                     continue;
