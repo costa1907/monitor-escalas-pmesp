@@ -96,8 +96,12 @@ const LOGIN_URL = process.env.LOGIN_URL || "http://intranet.policiamilitar.sp.go
 // abrir. Isso resolve de vez o bug antigo: o problema NUNCA foi a sessão do
 // login expirando — era o MENU que travava depois do primeiro uso. Como essa
 // URL pula o menu inteiro, dá pra reaproveitar a mesma sessão entre AISPs.
+//
+// A URL completa foi confirmada pelo usuário direto no navegador (a 1ª
+// tentativa usava um domínio suposto errado, e todas as áreas falhavam):
+// é o MESMO domínio do login (ms.policiamilitar.sp.gov.br), na raiz.
 const URL_TELA_ESCALAS = process.env.URL_TELA_ESCALAS ||
-    "http://sistemasadmin.intranet.policiamilitar.sp.gov.br/Escala/chama_rotina.aspx?l+til9EMFvFgCT+SnDWWNQ==";
+    "http://ms.policiamilitar.sp.gov.br/chama_rotina.aspx?l+til9EMFvFgCT+SnDWWNQ==";
 
 const SEEN_PATH = path.join(__dirname, "seen.json");
 const JANELA_DIAS = 45; // quantos dias a partir de hoje ele pesquisa (data início/fim do filtro)
