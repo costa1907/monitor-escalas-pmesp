@@ -572,18 +572,10 @@ async function pesquisarEscalas(page1, aisp, onErro) {
         // postback do GeneXus) — em vez de desistir da AISP inteira no primeiro
         // clique sem efeito, tenta de novo até 3 vezes antes de encerrar.
         //
-        // ⚠️ CORREÇÃO 02/08/2026 (bug real, visível em log de execução): o aviso
-        // "Clique em 'Próxima' não teve efeito" aparecia em 100% das áreas com
-        // 2+ páginas, SEMPRE logo na 1ª virada de página — e isso não era o
-        // clique falhando de verdade, era a DETECÇÃO desistindo cedo demais. A
-        // 1ª troca de página é consistentemente mais lenta que as seguintes, e
-        // o prazo antigo (27 ciclos) acabava antes de conseguir confirmar a
-        // leitura 2x seguidas. Aí o código reclicava "Próxima" achando que
-        // tinha falhado — e esse clique extra às vezes PULAVA uma página
-        // inteira, o que explica as áreas que voltavam incompletas (10/30,
-        // 10/21...) e precisavam refazer a busca do zero, gastando mais tempo
-        // ainda. Corrigido: prazo maior (50 ciclos = ~15s), e assim que uma
-        // leitura nova estabiliza ela é aceita, sem reclicar à toa.
+        // Nota (05/08/2026): tentamos aumentar essa espera de 27 pra 50 ciclos
+        // achando que o aviso "Clique em 'Próxima' não teve efeito" era só a
+        // detecção desistindo cedo. Não resolveu (o aviso continuou aparecendo)
+        // e só somava tempo em cada área, então foi revertido pro valor original.
         var mudou = false;
         for (var tentativaClique = 0; tentativaClique < 3 && !mudou; tentativaClique++) {
             await clicarProximaPaginaGX(embFrameHandle);
@@ -593,7 +585,7 @@ async function pesquisarEscalas(page1, aisp, onErro) {
             // 2 vezes seguidas — evita travar num instante de transição vazio.
             var candFp = null;
             var candLinhas = null;
-            for (var tentativa = 0; tentativa < 50; tentativa++) {
+            for (var tentativa = 0; tentativa < 27; tentativa++) {
                 await page1.waitForTimeout(300);
                 var novasLinhas = await embFrameHandle.evaluate(_lerLinhasGrade);
                 var novoFingerprint = JSON.stringify(novasLinhas);
@@ -717,22 +709,31 @@ async function pesquisarEscalas(page1, aisp, onErro) {
                     ultimoErroAisp = e;
                     console.log("   ❌ Falha ao pesquisar AISP " + aisp + " (tentativa " + tentativaAisp + "/" + MAX_TENTATIVAS_AISP + "): " + e.message);
                     resultadoBusca = null;
-                    // Se falhou, descarta a sessão atual — a próxima tentativa vai
-                    // logar do zero, cobrindo o caso de a sessão ter expirado mesmo.
-                    if (paginaSessao) { await paginaSessao.close().catch(() => {}); paginaSessao = null; }
+                    // ⚠️ CORREÇÃO 05/08/2026 (bug real, confirmado em log): aqui antes
+                    // havia um "descarta a sessão e loga de novo" como rede de
+                    // segurança pro caso da sessão ter expirado. Na prática isso virou
+                    // o PROBLEMA: qualquer falha isolada (ex: uma renavegação lenta)
+                    // disparava um login novo, e login atrás de login degradava o
+                    // site, causando ainda mais falhas — bola de neve que derrubou um
+                    // run inteiro (10/18 áreas em 22min, quase tudo falhando, um login
+                    // por área). Agora a sessão é MANTIDA mesmo quando uma área falha:
+                    // a área seguinte tenta com a mesma sessão, que quase sempre ainda
+                    // está viva. Só quando a página realmente morre (isClosed) é que um
+                    // novo login acontece — ver a verificação logo acima.
                     continue;
                 }
                 var completo = resultadoBusca.totalEsperado === null || resultadoBusca.linhas.length >= resultadoBusca.totalEsperado;
-                // ⚠️ CORREÇÃO 02/08/2026: removida a reconfirmação de "0 registros".
-                // Ela foi criada quando cada AISP fazia login do zero — nessa janela
-                // logo depois do login, já vimos o preenchimento do campo falhar
-                // silenciosamente e voltar "0" com escalas existindo de verdade. Como
-                // agora o login é feito UMA VEZ SÓ, bem antes (e a sessão já está
-                // assentada quando as áreas rodam), esse risco praticamente sumiu — e
-                // a reconfirmação virou puro desperdício: no último run real, ela
-                // refez a busca inteira à toa em 6 áreas genuinamente vazias
-                // (~2min30 perdidos). Se um dia voltar a aparecer "0" falso, dá pra
-                // reativar essa proteção.
+                // ⚠️ RESTAURADO 05/08/2026: essa reconfirmação chegou a ser removida
+                // (parecia desperdício, já que o login agora é único), mas o run
+                // seguinte foi MUITO pior — sem ela, uma área com resultado parcial
+                // (40/41) caía direto no caminho de "refazer a busca do zero", essa
+                // renavegação falhava, e a rede de segurança de "descartar sessão e
+                // relogar" virava bola de neve: login atrás de login, 10/18 áreas em
+                // 22min contra 18/18 antes. Mantida como estava.
+                if (completo && resultadoBusca.totalEsperado === 0 && tentativaAisp === 1) {
+                    console.log("   ℹ️ Veio com 0 registros na 1ª tentativa — confirmando com mais uma antes de aceitar (pode ser efeito do login ainda assentando)...");
+                    continue;
+                }
                 if (completo) break;
                 if (tentativaAisp < MAX_TENTATIVAS_AISP) {
                     console.log("⚠️ Só capturei " + resultadoBusca.linhas.length + "/" + resultadoBusca.totalEsperado +
