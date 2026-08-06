@@ -8,7 +8,7 @@
 //     por escala — o Telegram limita a ~1 mensagem/segundo pro mesmo chat,
 //     então mandar uma por escala em runs com muitas novidades de uma vez
 //     estourava esse limite e várias mensagens ficavam pra trás silenciosamente);
-//   - um resumo final, só quando tem escala nova de verdade.
+//   - um resumo final, sempre (ache ou não escala), com todas as áreas.
 // Também tem espera entre envios + nova tentativa automática se o Telegram
 // recusar por excesso de mensagens (HTTP 429), pra não perder nada.
 // ─────────────────────────────────────────────────────────────────────────
@@ -265,12 +265,16 @@ function montarMensagensDoGrupo(grupo) {
             .map(function (a) {
                 // "erro: true" = essa área falhou repetidamente e foi pulada nessa
                 // checagem (não é um "0" de verdade). "semTempo: true" = nem chegou
-                // a ser checada porque o orçamento de tempo do run acabou antes —
-                // sinaliza cada caso diferente pra não confundir com uma área que
-                // realmente não tem escala disponível.
-                var icone = a.erro ? "🔴" : (a.semTempo ? "⏭️" : (a.total > 0 ? "🟢" : "⚪"));
+                // a ser checada porque o orçamento de tempo do run acabou antes.
+                // "incompleta: true" = a área respondeu, mas veio faltando escala
+                // (ex: 40 de 42) — nesse caso a leitura parcial é descartada de
+                // propósito, pra não avisar as escalas "picado" (metade agora,
+                // metade no ciclo seguinte como se fosse novidade). A área inteira
+                // é tentada de novo na próxima checagem.
+                var icone = a.erro ? "🔴" : (a.semTempo ? "⏭️" : (a.incompleta ? "🟡" : (a.total > 0 ? "🟢" : "⚪")));
                 var sufixo = a.erro ? " (falhou nessa checagem, tentaremos de novo na próxima)"
-                    : (a.semTempo ? " (não deu tempo nessa checagem, será checada na próxima)" : "");
+                    : (a.semTempo ? " (não deu tempo nessa checagem, será checada na próxima)"
+                    : (a.incompleta ? " (veio incompleta: " + a.capturado + "/" + a.esperado + " — será checada de novo na próxima)" : ""));
                 return icone + " " + a.nome + ": " + a.total + sufixo;
             })
             .join("\n") +
