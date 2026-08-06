@@ -678,7 +678,13 @@ async function pesquisarEscalas(page1, aisp, onErro) {
     var paginaSessao = null;
     var resultadoPorArea = []; // { aisp, nome, total } — TODAS as áreas verificadas, mesmo com 0
     try {
-        var MAX_TENTATIVAS_AISP = 2; // se a paginação ficar devendo escalas (comparado ao Total de
+        // ⚠️ AJUSTE 05/08/2026: era 2, subiu pra 3. Motivo (visto em log real,
+        // AISP Paulista): quando uma área vem com "0 registros", a reconfirmação
+        // CONSOME a tentativa 1 — sobrava só a tentativa 2 pra lidar com uma
+        // lentidão passageira do site na hora de reabrir a tela, e se ela
+        // falhasse a área era pulada. Com 3, sempre sobra uma de folga. Só custa
+        // tempo quando algo realmente falha; no caminho normal nada muda.
+        var MAX_TENTATIVAS_AISP = 3; // se a paginação ficar devendo escalas (comparado ao Total de
         // Registros da própria grade), refaz a busca dessa AISP do zero em vez de aceitar parcial
         for (var i = 0; i < AISPS_MONITORADAS.length; i++) {
             var aisp = AISPS_MONITORADAS[i];
@@ -695,6 +701,15 @@ async function pesquisarEscalas(page1, aisp, onErro) {
 
             var resultadoBusca = null;
             var ultimoErroAisp = null;
+            // ⚠️ CORREÇÃO 05/08/2026 (bug real, visto em log): guarda o MELHOR
+            // resultado válido já obtido nesta AISP. Antes, se uma tentativa
+            // POSTERIOR falhasse (ex: a reconfirmação de "0 registros" pegando
+            // o site lento), o resultado bom da tentativa anterior era jogado
+            // fora e a área inteira virava "🔴 falhou" — mesmo tendo lido os
+            // dados direitinho antes. Foi exatamente o que aconteceu com a
+            // Paulista: leu 0 registros com sucesso, a reconfirmação deu
+            // timeout, e o resultado válido foi perdido à toa.
+            var melhorResultado = null;
             for (var tentativaAisp = 1; tentativaAisp <= MAX_TENTATIVAS_AISP; tentativaAisp++) {
                 // IMPORTANTE (bug real corrigido): pesquisarEscalas pode lançar exceção
                 // (ex: timeout esperando o campo de AISP aparecer, por lentidão pontual
@@ -711,6 +726,9 @@ async function pesquisarEscalas(page1, aisp, onErro) {
                         paginaSessao = await fazerLoginEAbrirDelegada(context, tirarScreenshotErro);
                     }
                     resultadoBusca = await pesquisarEscalas(paginaSessao, aisp, tirarScreenshotErro);
+                    if (!melhorResultado || resultadoBusca.linhas.length > melhorResultado.linhas.length) {
+                        melhorResultado = resultadoBusca;
+                    }
                 } catch (e) {
                     ultimoErroAisp = e;
                     console.log("   ❌ Falha ao pesquisar AISP " + aisp + " (tentativa " + tentativaAisp + "/" + MAX_TENTATIVAS_AISP + "): " + e.message);
@@ -750,6 +768,12 @@ async function pesquisarEscalas(page1, aisp, onErro) {
                 }
             }
 
+            if (!resultadoBusca && melhorResultado) {
+                console.log("   ℹ️ A última tentativa falhou, mas aproveitando o resultado válido já obtido antes nesta AISP (" +
+                    melhorResultado.linhas.length + " escala(s)) em vez de descartar tudo.");
+                resultadoBusca = melhorResultado;
+            }
+
             if (!resultadoBusca) {
                 console.log("⚠️ Pulando AISP " + aisp + " (" + _nomeDaAisp(aisp) + ") nessa checagem — falhou repetidamente" +
                     (ultimoErroAisp ? (": " + ultimoErroAisp.message) : "") + ". Seguindo pras próximas AISPs.");
@@ -758,6 +782,35 @@ async function pesquisarEscalas(page1, aisp, onErro) {
             }
 
             var linhas = resultadoBusca.linhas;
+
+            // ⚠️ CORREÇÃO 05/08/2026 (a pedido do usuário, queixa real): se a
+            // captura desta AISP veio INCOMPLETA (ex: 40 de 42 escalas), a
+            // leitura parcial é DESCARTADA por inteiro, em vez de registrada.
+            //
+            // POR QUE: antes, as 40 capturadas eram marcadas como "já vistas" e
+            // avisadas no Telegram. No ciclo seguinte, as 2 que faltaram eram
+            // finalmente capturadas — e, como nunca tinham sido vistas, saíam
+            // como se fossem escalas NOVAS. Resultado: escalas antigas chegando
+            // "picado", em avisos separados, dando a impressão de novidade que
+            // não existia. Descartando a leitura parcial, a área inteira é
+            // tentada de novo na próxima checagem (30 min depois) e só entra no
+            // radar quando vier completa — aí você recebe tudo de uma vez só.
+            //
+            // Custo: uma área incompleta atrasa 1 ciclo. Com a correção de
+            // paginação por ID (ver pesquisarEscalas), capturas incompletas
+            // ficaram raras, então esse custo quase nunca aparece na prática.
+            var capturaIncompleta = resultadoBusca.totalEsperado !== null &&
+                linhas.length < resultadoBusca.totalEsperado;
+            if (capturaIncompleta) {
+                console.log("⚠️ AISP " + aisp + " (" + _nomeDaAisp(aisp) + ") veio INCOMPLETA (" +
+                    linhas.length + "/" + resultadoBusca.totalEsperado + ") — descartando essa leitura parcial " +
+                    "e deixando pra próxima checagem, pra não avisar as escalas picado.");
+                resultadoPorArea.push({
+                    aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length,
+                    incompleta: true, capturado: linhas.length, esperado: resultadoBusca.totalEsperado
+                });
+                continue;
+            }
             console.log("AISP " + aisp + " (" + _nomeDaAisp(aisp) + "): " + linhas.length + " linha(s) na grade.");
             resultadoPorArea.push({ aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length });
             for (const l of linhas) {
