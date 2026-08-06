@@ -459,6 +459,16 @@ async function pesquisarEscalas(page1, aisp, onErro) {
             ultimoErroAbertura = e;
             console.log("   ⚠️ Não consegui abrir a tela de pesquisa pra AISP " + aisp + " (tentativa " + tentativaAbertura + "/" + MAX_TENTATIVAS_ABERTURA + "): " + e.message);
             if (typeof onErro === "function") await onErro(page1, "aisp_" + aisp + "_t" + tentativaAbertura);
+            // ⚠️ CORREÇÃO 06/08/2026 (bug real, visto em log): antes não havia
+            // NENHUMA pausa entre as tentativas. Quando o erro é instantâneo
+            // (ex: ERR_CONNECTION_REFUSED, quando o servidor recusa a conexão em
+            // vez de demorar), o robô disparava 6 tentativas em menos de 1
+            // segundo — martelando um servidor que já estava com problema.
+            // Agora espera antes de tentar de novo, dando tempo pro site se
+            // recuperar de uma instabilidade passageira.
+            if (tentativaAbertura < MAX_TENTATIVAS_ABERTURA) {
+                await page1.waitForTimeout(3000);
+            }
         }
     }
     if (!embFrameHandle) {
@@ -677,6 +687,16 @@ async function pesquisarEscalas(page1, aisp, onErro) {
     // economiza ~15-20s por área (~5 min no run completo de 18 áreas).
     var paginaSessao = null;
     var resultadoPorArea = []; // { aisp, nome, total } — TODAS as áreas verificadas, mesmo com 0
+
+    // ⚠️ CORREÇÃO 06/08/2026 ("disjuntor", bug real visto em log): quando o site
+    // da PMESP cai no meio do run, TODAS as áreas seguintes falham — e cada uma
+    // gastava ~3 min tentando (3 tentativas x 2 aberturas x ~29s de timeout).
+    // Num run real isso queimou 16 minutos falhando em sequência antes do
+    // usuário cancelar na mão. Agora, depois de algumas áreas seguidas falhando,
+    // o robô entende que o problema é do site (não daquela área específica),
+    // para de vez e deixa o resto pra próxima checagem, 30 min depois.
+    var falhasSeguidas = 0;
+    var MAX_FALHAS_SEGUIDAS = 3;
     try {
         // ⚠️ AJUSTE 05/08/2026: era 2, subiu pra 3. Motivo (visto em log real,
         // AISP Paulista): quando uma área vem com "0 registros", a reconfirmação
@@ -686,8 +706,31 @@ async function pesquisarEscalas(page1, aisp, onErro) {
         // tempo quando algo realmente falha; no caminho normal nada muda.
         var MAX_TENTATIVAS_AISP = 3; // se a paginação ficar devendo escalas (comparado ao Total de
         // Registros da própria grade), refaz a busca dessa AISP do zero em vez de aceitar parcial
+
+        // ⚠️ DISJUNTOR (06/08/2026, a partir de incidente real): se o sistema da
+        // PMESP cai no meio do run, TODAS as áreas seguintes falham — e cada uma
+        // gastava até ~2min em timeouts de 20s antes de desistir. Num incidente
+        // real (06/08 12:02, o servidor começou a recusar conexão com
+        // ERR_CONNECTION_REFUSED — banco deles esgotado, horário de pico), isso
+        // queimou ~16 minutos moendo um site morto até o usuário cancelar na mão.
+        // Agora, se várias áreas falharem SEGUIDAS, o run para sozinho: não
+        // adianta insistir num sistema fora do ar, e ainda evita martelar um
+        // servidor que já está sofrendo. A próxima checagem (30 min) tenta de novo.
+        var falhasSeguidas = 0;
+        var LIMITE_FALHAS_SEGUIDAS = 3;
+
         for (var i = 0; i < AISPS_MONITORADAS.length; i++) {
             var aisp = AISPS_MONITORADAS[i];
+
+            if (falhasSeguidas >= LIMITE_FALHAS_SEGUIDAS) {
+                console.log("🛑 " + falhasSeguidas + " áreas falharam SEGUIDAS — o sistema da PMESP parece estar fora do ar " +
+                    "ou instável demais nesse momento. Parando o run aqui em vez de insistir (e de martelar um servidor " +
+                    "que já está sofrendo). As áreas restantes serão checadas na próxima execução (30 min).");
+                for (var k = i; k < AISPS_MONITORADAS.length; k++) {
+                    resultadoPorArea.push({ aisp: AISPS_MONITORADAS[k], nome: _nomeDaAisp(AISPS_MONITORADAS[k]), total: 0, indisponivel: true });
+                }
+                break;
+            }
 
             if (minutosDecorridos() > ORCAMENTO_MAX_MINUTOS) {
                 console.log("⏰ Orçamento de tempo (" + ORCAMENTO_MAX_MINUTOS + " min) esgotado depois de checar " +
@@ -778,8 +821,28 @@ async function pesquisarEscalas(page1, aisp, onErro) {
                 console.log("⚠️ Pulando AISP " + aisp + " (" + _nomeDaAisp(aisp) + ") nessa checagem — falhou repetidamente" +
                     (ultimoErroAisp ? (": " + ultimoErroAisp.message) : "") + ". Seguindo pras próximas AISPs.");
                 resultadoPorArea.push({ aisp: aisp, nome: _nomeDaAisp(aisp), total: 0, erro: true });
+
+                // "Disjuntor": se várias áreas seguidas falharem, o problema não é
+                // de uma área específica — é o site que caiu ou a VPN que oscilou.
+                // Continuar só queima o resto do tempo do run falhando (num caso
+                // real, 16 minutos jogados fora). Melhor parar e deixar tudo pra
+                // próxima checagem, daqui 30 min.
+                falhasSeguidas++;
+                if (falhasSeguidas >= MAX_FALHAS_SEGUIDAS) {
+                    console.log("🛑 " + falhasSeguidas + " áreas seguidas falharam — provavelmente o site da PMESP está " +
+                        "fora do ar ou a VPN oscilou. Parando esta checagem pra não queimar o resto do tempo à toa. " +
+                        "As áreas restantes serão checadas na próxima execução (30 min).");
+                    for (var k = i + 1; k < AISPS_MONITORADAS.length; k++) {
+                        resultadoPorArea.push({ aisp: AISPS_MONITORADAS[k], nome: _nomeDaAisp(AISPS_MONITORADAS[k]), total: 0, semTempo: true });
+                    }
+                    break;
+                }
                 continue;
             }
+
+            // Chegou aqui = a área respondeu (mesmo que incompleta): o site está
+            // de pé, então zera o contador do disjuntor.
+            falhasSeguidas = 0;
 
             var linhas = resultadoBusca.linhas;
 
