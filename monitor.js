@@ -286,6 +286,25 @@ async function fazerLoginEAbrirDelegada(browserContext, onErro) {
 // mesma sessão pode ser reaproveitada à vontade entre AISPs.
 async function abrirTelaPesquisaDelegada(page1) {
     await page1.goto(URL_TELA_ESCALAS, { waitUntil: "domcontentloaded", timeout: 30000 });
+
+    // ⚠️ CORREÇÃO 06/08/2026 (a partir de um print real da tela de erro): quando
+    // o sistema da PMESP está sobrecarregado, ele NÃO fica mudo — ele responde
+    // rapidinho com uma página de erro do ASP.NET ("Server Error in '/ESCALA'
+    // Application" / "Unable to connect to SQL Server session database" /
+    // "Timeout expired... max pool size was reached"). Isso quer dizer que o
+    // banco onde ele guarda as SESSÕES esgotou as conexões — ou seja, o site
+    // inteiro está fora, não só essa tela.
+    //
+    // Antes o robô não reconhecia essa página: seguia em frente e ficava 20s
+    // esperando um campo que nunca ia aparecer, multiplicado por 2 aberturas x
+    // 3 tentativas x 18 áreas. Agora ele identifica a tela de erro e desiste na
+    // hora (menos de 1s), o que também aciona o "disjuntor" bem mais rápido e
+    // para de pressionar um servidor que já avisou que está sobrecarregado.
+    var textoDaPagina = await page1.evaluate(() => document.body ? document.body.innerText.slice(0, 2000) : "").catch(() => "");
+    if (/Server Error|Unable to connect to SQL Server|max pool size was reached|Timeout expired/i.test(textoDaPagina)) {
+        throw new Error("O sistema da PMESP respondeu com página de erro (sobrecarga no banco de sessão dele) — não adianta insistir agora.");
+    }
+
     // O robô Tampermonkey usa 1500ms de propósito depois de chegar nessa tela
     // (DELAY_TRAVA_VE_CLIQUE_MS) — o comentário original dele já avisa que esse
     // carregamento demora mais que os outros, então mantém esse valor testado.
