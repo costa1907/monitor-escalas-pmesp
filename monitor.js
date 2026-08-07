@@ -343,6 +343,27 @@ async function abrirTelaPesquisaDelegada(page1) {
 // IMPORTANTE: como essa função é passada pro navegador via frame.evaluate(), o
 // Playwright manda só o código DELA (não de funções "vizinhas" no arquivo) — por
 // isso qualquer helper precisa estar declarado AQUI DENTRO, não fora.
+// ⚠️ CORREÇÃO 07/08/2026 (bug real, grave, visto em log): o Playwright NÃO
+// tem limite de tempo em frame.evaluate(). Se o iframe travar, for descartado
+// ou a página ficar sem responder no meio de uma leitura, a chamada fica
+// pendurada PARA SEMPRE — e nada resgata. Num run real isso congelou o robô
+// por 30 MINUTOS sem imprimir uma única linha de log, até o job estourar.
+// (O "orçamento de tempo" de main() não salva nesse caso, porque ele só é
+// checado ENTRE as áreas, não no meio da paginação de uma delas.)
+//
+// Esta função embrulha qualquer operação com um prazo máximo: o que vier
+// primeiro, o resultado ou o prazo. Assim uma leitura travada vira um erro
+// normal, que o código já sabe tratar, em vez de um congelamento eterno.
+function comLimiteDeTempo(promessa, ms, descricao) {
+    var timer;
+    var prazo = new Promise(function (_, rejeitar) {
+        timer = setTimeout(function () {
+            rejeitar(new Error("Tempo esgotado (" + ms + "ms) em: " + descricao));
+        }, ms);
+    });
+    return Promise.race([promessa, prazo]).finally(function () { clearTimeout(timer); });
+}
+
 function _lerLinhasGrade() {
     function porPrefixo(linha, prefixo) {
         var el = linha.querySelector('[id^="' + prefixo + '"]');
@@ -616,15 +637,38 @@ async function pesquisarEscalas(page1, aisp, onErro) {
 
         // Procura por uma leitura que traga pelo menos um ID inédito. Se em ~9s
         // nada novo aparecer, tenta clicar de novo (até 3 vezes no total).
+        //
+        // ⚠️ Toda leitura vai com limite de tempo (comLimiteDeTempo): sem isso,
+        // um evaluate() travado congelava o robô pra sempre (ver comentário na
+        // definição da função). Se a leitura estourar o prazo, ela é tratada
+        // como "ainda não chegou" e o ciclo continua normalmente.
         async function _lerPaginaNovaSeChegou() {
-            var linhas = await embFrameHandle.evaluate(_lerLinhasGrade);
+            var linhas;
+            try {
+                linhas = await comLimiteDeTempo(
+                    embFrameHandle.evaluate(_lerLinhasGrade), 10000, "leitura da grade"
+                );
+            } catch (e) {
+                return null; // travou ou demorou demais — trata como "nada novo ainda"
+            }
             if (!linhas || linhas.length === 0) return null; // grade vazia/em transição
             var temIdNovo = linhas.some(function (l) { return !idsVistosNestaAisp.has(l.escalaId); });
             return temIdNovo ? linhas : null; // só IDs conhecidos = página repetida
         }
 
+        // Teto de tempo pra paginação desta AISP inteira. Rede de segurança
+        // extra: mesmo que alguma coisa inesperada demore demais aqui, o robô
+        // encerra a paginação desta área e segue, em vez de prender o run todo.
+        var inicioPaginacaoMs = Date.now();
+        var LIMITE_PAGINACAO_MS = 3 * 60 * 1000; // 3 minutos
+
         var mudou = false;
         for (var tentativaClique = 0; tentativaClique < 3 && !mudou; tentativaClique++) {
+            if (Date.now() - inicioPaginacaoMs > LIMITE_PAGINACAO_MS) {
+                console.log("   ⏱️ Paginação da AISP " + aisp + " passou de 3 min — encerrando aqui pra não travar o run.");
+                break;
+            }
+
             // Antes de RE-clicar, confere se a página não chegou "atrasada" — sem
             // isso, um clique extra em cima de uma virada que já estava a caminho
             // podia PULAR uma página inteira (e a AISP voltava incompleta).
@@ -633,9 +677,14 @@ async function pesquisarEscalas(page1, aisp, onErro) {
                 if (leituraAtrasada) { linhasAtuais = leituraAtrasada; mudou = true; break; }
             }
 
-            await clicarProximaPaginaGX(embFrameHandle);
+            try {
+                await comLimiteDeTempo(clicarProximaPaginaGX(embFrameHandle), 10000, "clique em Próxima");
+            } catch (e) {
+                console.log("   ⚠️ O clique em 'Próxima' travou (" + e.message + ") — seguindo pra próxima tentativa.");
+            }
 
             for (var tentativa = 0; tentativa < 30; tentativa++) {
+                if (Date.now() - inicioPaginacaoMs > LIMITE_PAGINACAO_MS) break;
                 await page1.waitForTimeout(300);
                 var leitura = await _lerPaginaNovaSeChegou();
                 if (leitura) { linhasAtuais = leitura; mudou = true; break; }
@@ -883,6 +932,27 @@ async function pesquisarEscalas(page1, aisp, onErro) {
             // ficaram raras, então esse custo quase nunca aparece na prática.
             var capturaIncompleta = resultadoBusca.totalEsperado !== null &&
                 linhas.length < resultadoBusca.totalEsperado;
+
+            // ⚠️ CORREÇÃO 07/08/2026 (bug real, visto em log): "zero falso".
+            // Quando a grade responde direito, ela informa "Total de Registros: N"
+            // — inclusive quando a área está mesmo vazia (aí vem N=0). Se NÃO
+            // conseguimos ler esse total (totalEsperado === null) E ainda por
+            // cima a leitura veio com 0 linhas, é sinal de que a tela não
+            // carregou de verdade — não de que a área está vazia. No log real,
+            // isso fez Centro Novo (que tem 48 escalas) ser registrada como 0.
+            // Agora esse caso é tratado como leitura suspeita e descartado,
+            // pra área ser checada de novo na próxima passagem.
+            var zeroSuspeito = resultadoBusca.totalEsperado === null && linhas.length === 0;
+            if (zeroSuspeito) {
+                console.log("⚠️ AISP " + aisp + " (" + _nomeDaAisp(aisp) + ") veio com 0 escalas mas SEM o " +
+                    "'Total de Registros' da grade — provável tela que não carregou, não área vazia. " +
+                    "Descartando essa leitura e deixando pra próxima checagem.");
+                resultadoPorArea.push({
+                    aisp: aisp, nome: _nomeDaAisp(aisp), total: 0,
+                    incompleta: true, capturado: 0, esperado: "?"
+                });
+                continue;
+            }
             if (capturaIncompleta) {
                 console.log("⚠️ AISP " + aisp + " (" + _nomeDaAisp(aisp) + ") veio INCOMPLETA (" +
                     linhas.length + "/" + resultadoBusca.totalEsperado + ") — descartando essa leitura parcial " +
