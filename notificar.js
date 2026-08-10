@@ -226,59 +226,19 @@ function montarMensagensDoGrupo(grupo) {
         }
     }
 
-    // CORREÇÃO 02/08/2026 (a pedido do usuário, versão final — voltou atrás
-    // da tentativa de mandar "silencioso"): confirmado que disable_notification
-    // NÃO resolve, porque o Telegram continua marcando a conversa como "tem
-    // mensagem nova" (aquela bolinha/contador na lista de chats) mesmo pra
-    // mensagens silenciosas — só o som/alerta é suprimido, não o indicador
-    // visual. Como isso não atendia o pedido original (não incomodar quando
-    // não há novidade real), voltou a SÓ enviar o resumo quando realmente TEM
-    // escala nova. Sem escala nova, não manda nada — nem aparece indicador
-    // nenhum no canal.
+    // ⚠️ CORREÇÃO 10/08/2026 (a pedido do usuário): o resumo de fim de
+    // checagem ("🔎 Checagem concluída!", com a lista de todas as AISPs e os
+    // totais) foi REMOVIDO. Agora o canal recebe apenas os avisos de escalas
+    // novas, sem a mensagem de fechamento a cada ciclo.
+    //
+    // Consequência a ter em mente: as informações de diagnóstico que só
+    // apareciam ali (🔴 área que falhou, 🟡 área que veio incompleta,
+    // ⏭️ área que não deu tempo) deixam de ser visíveis no Telegram. Elas
+    // continuam registradas no log do GitHub Actions, que é onde dá pra
+    // investigar quando algo parecer estranho.
     if (novos.length === 0) {
-        console.log("ℹ️ Nenhuma escala nova nessa checagem — pulando o resumo (só notifica quando há novidade real).");
-        return;
+        console.log("ℹ️ Nenhuma escala nova nessa checagem — nada a enviar.");
+    } else {
+        console.log("✅ " + novos.length + " escala(s) nova(s) avisada(s). Resumo final desativado a pedido do usuário.");
     }
-
-    if (!primeiraMensagem) await dormir(PAUSA_ENTRE_ENVIOS_MS);
-    var totalGeral = resultadoPorArea.reduce(function (soma, a) { return soma + a.total; }, 0);
-
-    // "agora" vem no formato "dd/mm/aaaa, HH:mm:ss" (saída padrão de
-    // toLocaleString("pt-BR")) — separa em data e hora pra mostrar cada um
-    // com seu próprio ícone, numa linha só, separados por uma barra em pé.
-    var partesAgora = String(agora).split(", ");
-    var dataAgora = partesAgora[0] || agora;
-    var horaAgora = partesAgora[1] || "";
-
-    // CORREÇÃO 31/07/2026 (layout do resumo, a pedido do usuário, simulado e
-    // aprovado antes de aplicar): data/hora numa linha própria com ícones,
-    // "AISP(s)" no lugar de "área(s)" com o rótulo do módulo (MODULO_LABEL,
-    // configurável), troféu 🏆 no lugar do confete 🎉, "(avisos já enviados
-    // acima)." numa linha própria, número da AISP tirado da lista de áreas
-    // (só o nome), e negrito na linha INTEIRA de "Checagem concluída!", na
-    // linha INTEIRA de "Total: ...", e na linha INTEIRA do troféu (mas não em
-    // "(avisos já enviados acima)." — essa fica em texto normal).
-    var resumo = "<b>🔎 Checagem concluída!</b>\n" +
-        "📅 " + dataAgora + " | 🕐 " + horaAgora + "\n\n" +
-        "<b>Total: " + totalGeral + " escala(s) em " + resultadoPorArea.length + " AISP(s) [" + MODULO_LABEL + "]</b>\n\n" +
-        resultadoPorArea
-            .map(function (a) {
-                // "erro: true" = essa área falhou repetidamente e foi pulada nessa
-                // checagem (não é um "0" de verdade). "semTempo: true" = nem chegou
-                // a ser checada porque o orçamento de tempo do run acabou antes.
-                // "incompleta: true" = a área respondeu, mas veio faltando escala
-                // (ex: 40 de 42) — nesse caso a leitura parcial é descartada de
-                // propósito, pra não avisar as escalas "picado" (metade agora,
-                // metade no ciclo seguinte como se fosse novidade). A área inteira
-                // é tentada de novo na próxima checagem.
-                var icone = a.erro ? "🔴" : (a.semTempo ? "⏭️" : (a.incompleta ? "🟡" : (a.total > 0 ? "🟢" : "⚪")));
-                var sufixo = a.erro ? " (falhou nessa checagem, tentaremos de novo na próxima)"
-                    : (a.semTempo ? " (não deu tempo nessa checagem, será checada na próxima)"
-                    : (a.incompleta ? " (veio incompleta: " + a.capturado + "/" + a.esperado + " — será checada de novo na próxima)" : ""));
-                return icone + " " + a.nome + ": " + a.total + sufixo;
-            })
-            .join("\n") +
-        "\n\n" +
-        "<b>🏆 " + novos.length + " são NOVAS escala(s) desde a última checagem.</b>\n(avisos já enviados acima).";
-    await enviarTelegram(resumo);
 })();
