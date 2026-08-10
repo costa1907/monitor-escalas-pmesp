@@ -727,11 +727,25 @@ async function pesquisarEscalas(page1, aisp, onErro) {
     // Cada screenshot leva um rótulo único no nome do arquivo (ex: erro_login.png,
     // erro_aisp_85759_t1.png) — antes só existia um "erro.png" fixo, que a 2ª
     // falha do mesmo run já sobrescrevia, perdendo a evidência da 1ª.
+    // ⚠️ CORREÇÃO 10/08/2026 (bug real, medido em log): quando a página está
+    // travada, tirar screenshot TAMBÉM trava — e o padrão do Playwright é
+    // esperar 30 SEGUNDOS antes de desistir. Num run real isso apareceu 13
+    // vezes e queimou 6min30 sozinho, só tentando fotografar telas quebradas.
+    // Como a screenshot serve apenas pra debug (não faz o robô funcionar),
+    // agora tem prazo curto (5s) e teto de 3 por execução — o bastante pra
+    // investigar um problema, sem virar o gargalo do run.
+    var screenshotsTiradas = 0;
+    var MAX_SCREENSHOTS = 3;
     async function tirarScreenshotErro(pagina, rotulo) {
         if (!pagina) return;
+        if (screenshotsTiradas >= MAX_SCREENSHOTS) return;
+        screenshotsTiradas++;
         var nomeArquivo = "erro" + (rotulo ? ("_" + rotulo) : "") + ".png";
-        try { await pagina.screenshot({ path: path.join(__dirname, nomeArquivo), fullPage: true }); }
-        catch (e) { console.error("⚠️ Não consegui tirar a screenshot de erro:", e.message); }
+        try {
+            await pagina.screenshot({ path: path.join(__dirname, nomeArquivo), fullPage: true, timeout: 5000 });
+        } catch (e) {
+            console.error("⚠️ Não consegui tirar a screenshot de erro:", e.message);
+        }
     }
 
     // ⚠️ Orçamento de tempo (CORREÇÃO 31/07/2026): o job do GitHub Actions tem um
@@ -908,9 +922,18 @@ async function pesquisarEscalas(page1, aisp, onErro) {
                 continue;
             }
 
-            // Chegou aqui = a área respondeu (mesmo que incompleta): o site está
-            // de pé, então zera o contador do disjuntor.
-            falhasSeguidas = 0;
+            // ⚠️ CORREÇÃO 10/08/2026 (bug real, medido em log): aqui o contador
+            // do disjuntor era zerado assim que a área "respondia" — INCLUSIVE
+            // quando a resposta era ruim (captura incompleta ou zero suspeito).
+            // Num run real, a Paulista veio com 10 de 45 escalas e ainda falhou
+            // ao reabrir a tela, mas esse reset a tratou como sucesso: o
+            // contador voltou de 2 pra 0, o disjuntor nunca chegou em 3 e o run
+            // arrastou até estourar o orçamento de 22 min.
+            //
+            // Agora o contador só zera mais abaixo, DEPOIS de confirmar que a
+            // captura veio completa de verdade. Área incompleta ou com zero
+            // suspeito CONTA como sinal de problema (o site não está saudável),
+            // então o disjuntor consegue agir bem mais cedo.
 
             var linhas = resultadoBusca.linhas;
 
@@ -951,6 +974,8 @@ async function pesquisarEscalas(page1, aisp, onErro) {
                     aisp: aisp, nome: _nomeDaAisp(aisp), total: 0,
                     incompleta: true, capturado: 0, esperado: "?"
                 });
+                // Leitura ruim conta como sinal de problema pro disjuntor.
+                falhasSeguidas++;
                 continue;
             }
             if (capturaIncompleta) {
@@ -961,8 +986,14 @@ async function pesquisarEscalas(page1, aisp, onErro) {
                     aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length,
                     incompleta: true, capturado: linhas.length, esperado: resultadoBusca.totalEsperado
                 });
+                // Leitura ruim conta como sinal de problema pro disjuntor.
+                falhasSeguidas++;
                 continue;
             }
+            // Captura completa e confiável: agora sim o site provou que está
+            // saudável, então zera o contador do disjuntor.
+            falhasSeguidas = 0;
+
             console.log("AISP " + aisp + " (" + _nomeDaAisp(aisp) + "): " + linhas.length + " linha(s) na grade.");
             resultadoPorArea.push({ aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length });
             for (const l of linhas) {
