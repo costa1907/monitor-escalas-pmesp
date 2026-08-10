@@ -112,8 +112,37 @@ function hoje() {
 function formatarDataBR(d) {
     return String(d.getDate()).padStart(2, "0") + "/" + String(d.getMonth() + 1).padStart(2, "0") + "/" + d.getFullYear();
 }
+// ⚠️ CORREÇÃO 10/08/2026 (bug real, investigado no histórico do seen.json):
+// a "identidade" de uma escala incluía o HORÁRIO. Quando a PMESP mudava o
+// horário de uma escala já existente, a identidade mudava junto e o robô a
+// anunciava como se fosse NOVA. Foi exatamente o que aconteceu com as 7
+// escalas de Florêncio de Abreu: elas existiam desde 04/08, a PMESP deslocou
+// o horário em 1 hora (18:00-02:00 -> 19:00-03:00), e todas voltaram como
+// "novas" — já com 92 a 187 inscritos acumulados ao longo de 6 dias, o que
+// deixou o aviso sem sentido.
+//
+// Agora a identidade é AISP + data + ID da escala. O ID é o que a PMESP usa
+// pra identificar a escala de verdade; o horário é um detalhe que pode ser
+// ajustado. A data continua na chave porque a limpeza automática (ver
+// salvarVistos) usa ela pra descartar escalas que já passaram.
+function _identidadeDaEscala(aisp, data, escalaId) {
+    return aisp + "_" + data + "_" + escalaId;
+}
+
+// Converte chaves no formato ANTIGO (com horário) pro formato novo, pra não
+// disparar uma enxurrada de falsos "novos" na primeira execução após a
+// mudança. Antigo: aisp_data_horaIniXhoraFim_id  ->  novo: aisp_data_id
+function _converterChaveAntiga(chave) {
+    var p = String(chave).split("_");
+    if (p.length === 4) return p[0] + "_" + p[1] + "_" + p[3];
+    return chave;
+}
+
 function carregarVistos() {
-    try { return new Set(JSON.parse(fs.readFileSync(SEEN_PATH, "utf8"))); } catch (e) { return new Set(); }
+    try {
+        var lista = JSON.parse(fs.readFileSync(SEEN_PATH, "utf8"));
+        return new Set(lista.map(_converterChaveAntiga));
+    } catch (e) { return new Set(); }
 }
 function salvarVistos(set) {
     var lista = Array.from(set);
@@ -997,7 +1026,7 @@ async function pesquisarEscalas(page1, aisp, onErro) {
             console.log("AISP " + aisp + " (" + _nomeDaAisp(aisp) + "): " + linhas.length + " linha(s) na grade.");
             resultadoPorArea.push({ aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length });
             for (const l of linhas) {
-                var chave = aisp + "_" + l.data + "_" + l.horaIni + "x" + l.horaFim + "_" + l.escalaId;
+                var chave = _identidadeDaEscala(aisp, l.data, l.escalaId);
                 if (!vistos.has(chave)) {
                     vistos.add(chave);
                     novos.push({ aisp: aisp, nome: _nomeDaAisp(aisp), ...l });
