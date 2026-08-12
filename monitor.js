@@ -1043,7 +1043,19 @@ async function pesquisarEscalas(page1, aisp, onErro) {
     await browser.close();
 
     if (novos.length > 0) {
-        console.log("🎉 " + novos.length + " escala(s) nova(s) encontrada(s)!");
+        console.log("🏆 " + novos.length + " escala(s) nova(s) encontrada(s)!");
+        // Agrupa por AISP só pra deixar o log mais fácil de ler — os dados já
+        // existem em "novos" (mesmo agrupamento que o notificar.js usa pra
+        // montar as mensagens do Telegram), então isso não custa nada a mais
+        // de tempo nem de requisição, é só reorganizar o que já foi calculado.
+        var porAispNoLog = new Map();
+        novos.forEach(function (n) {
+            if (!porAispNoLog.has(n.aisp)) porAispNoLog.set(n.aisp, { nome: n.nome, qtd: 0 });
+            porAispNoLog.get(n.aisp).qtd++;
+        });
+        porAispNoLog.forEach(function (info, aispChave) {
+            console.log("   🎉 " + info.qtd + " escala(s) nova(s): AISP " + aispChave + " (" + info.nome + ")");
+        });
     } else {
         console.log("Nada de novo nesta checagem.");
     }
