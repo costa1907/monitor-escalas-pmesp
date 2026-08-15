@@ -198,13 +198,13 @@ function montarMensagensDoGrupo(grupo) {
     }
 
     if (resultado.erro) {
-        console.log("Notificando erro da checagem...");
-        // Escapa <, > e & — mensagens de erro costumam trazer stack trace de JS
-        // (ex: "<anonymous>"), e isso quebra o parser de HTML do Telegram se
-        // mandado cru, fazendo a notificação de erro falhar silenciosamente.
-        var erroEscapado = String(resultado.erro)
-            .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-        await enviarTelegram("⚠️ O monitor de escalas deu erro: " + erroEscapado);
+        // ⚠️ CORREÇÃO 15/08/2026 (a pedido do usuário): erros técnicos da
+        // checagem (ex: falha de VPN, timeout) NÃO são mais enviados pro
+        // canal do Telegram — o público do canal não deve ver esse tipo de
+        // mensagem, que não tem utilidade pra quem só quer saber de escala
+        // nova. O erro continua aparecendo no log do GitHub Actions
+        // normalmente, que é onde a investigação de problemas acontece.
+        console.log("⚠️ A checagem deu erro (não notificado no Telegram, só aqui no log): " + resultado.erro);
         return;
     }
 
