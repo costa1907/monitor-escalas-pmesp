@@ -1,0 +1,163 @@
+name: Monitorar DEJEM PMESP
+
+# ⚠️ VERSÃO DEJEM (15/08/2026): clone do monitorar.yml da Atividade Delegada,
+# rodando em paralelo como um workflow TOTALMENTE separado (grupo de
+# concorrência próprio) — assim um não espera o outro terminar.
+#
+# ATENÇÃO — RISCO AINDA NÃO TESTADO: o usuário confirmou que o SITE aceita
+# duas sessões de LOGIN simultâneas com a mesma conta (testou abrindo duas
+# abas). Isso NÃO é a mesma coisa que confirmar se o servidor de VPN aceita
+# dois TÚNEIS simultâneos com o mesmo usuário de VPN — são sistemas
+# diferentes (gateway de VPN vs. aplicação web por trás dele). Se o gateway
+# de VPN só permitir uma conexão por vez, esses dois workflows rodando ao
+# mesmo tempo podem brigar entre si na etapa de conectar a VPN. Só o teste
+# real (rodando os dois de propósito ao mesmo tempo) vai confirmar.
+on:
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+concurrency:
+  group: monitor-dejem-pmesp
+  cancel-in-progress: false
+
+jobs:
+  checar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Baixar código do repositório
+        uses: actions/checkout@v7
+
+      - name: Configurar Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+
+      - name: Instalar dependências
+        run: npm install
+
+      - name: Instalar navegador (Chromium) do Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: Instalar cliente VPN (openconnect, compatível com Cisco AnyConnect)
+        run: sudo apt-get update -y && sudo apt-get install -y openconnect
+
+      - name: Conectar na VPN da PMESP
+        timeout-minutes: 3
+        continue-on-error: true
+        id: vpn
+        env:
+          PMESP_VPN_USUARIO: ${{ secrets.PMESP_VPN_USUARIO }}
+          PMESP_VPN_SENHA: ${{ secrets.PMESP_VPN_SENHA }}
+        run: |
+          echo "$PMESP_VPN_SENHA" > /tmp/vpnpass
+          chmod 600 /tmp/vpnpass
+
+          sudo -b openconnect \
+            --background \
+            --pid-file=/tmp/openconnect.pid \
+            --user="$PMESP_VPN_USUARIO" \
+            --authgroup="53 - CPRV" \
+            --passwd-on-stdin \
+            --servercert pin-sha256:ccVM9Z6xyx607/QtUIoHLJcnq5m53m1crfttZ6Y6AhA= \
+            https://extranet.policiamilitar.sp.gov.br/ \
+            < /tmp/vpnpass > /tmp/openconnect.log 2>&1
+          sleep 1
+          rm -f /tmp/vpnpass
+
+          echo "Aguardando o arquivo de PID da VPN aparecer..."
+          ok_pid=""
+          for i in $(seq 1 15); do
+            if sudo test -f /tmp/openconnect.pid; then
+              ok_pid="1"
+              break
+            fi
+            sleep 1
+          done
+          echo "----- log do openconnect -----"
+          sudo cat /tmp/openconnect.log || true
+          echo "-------------------------------"
+          if [ -z "$ok_pid" ]; then
+            echo "❌ VPN não conectou (nenhum arquivo de PID apareceu)."
+            exit 1
+          fi
+          sudo cat /tmp/openconnect.pid
+
+          echo "Aguardando o DNS interno da PMESP responder..."
+          ok=""
+          for i in $(seq 1 20); do
+            if getent hosts intranet.policiamilitar.sp.gov.br > /dev/null 2>&1; then
+              echo "✅ DNS interno respondendo (tentativa $i)."
+              ok="1"
+              break
+            fi
+            sleep 3
+          done
+          if [ -z "$ok" ]; then
+            echo "❌ DNS interno não respondeu depois de esperar — a VPN pode não ter conectado direito."
+            exit 1
+          fi
+
+          echo ""
+          echo "✅ VPN conectada com sucesso — essa etapa já terminou de verdade."
+          echo "ℹ️  Se ela continuar parecendo 'presa' aqui na tela, é só um"
+          echo "    comportamento visual do GitHub — não cancele o workflow."
+
+      - name: Rodar checagem do DEJEM
+        if: steps.vpn.outcome == 'success'
+        env:
+          PMESP_USUARIO: ${{ secrets.PMESP_USUARIO }}
+          PMESP_SENHA: ${{ secrets.PMESP_SENHA }}
+          PMESP_AISP: ${{ vars.PMESP_AISP_DEJEM }}
+          LOGIN_URL: ${{ vars.LOGIN_URL }}
+          URL_TELA_ESCALAS_DEJEM: ${{ vars.URL_TELA_ESCALAS_DEJEM }}
+          NODE_ENV: production
+          FORCE_COLOR: "0"
+        continue-on-error: true
+        id: checagem
+        run: stdbuf -oL -eL node monitor_dejem.js
+
+      - name: Registrar falha de VPN (pra poder notificar)
+        if: steps.vpn.outcome == 'failure'
+        run: |
+          echo '{"erro":"A VPN não conseguiu conectar (ou o DNS interno não respondeu a tempo). Provavelmente instabilidade temporária do servidor VPN da PMESP.","novos":[],"resultadoPorArea":[]}' > resultado_dejem.json
+
+      - name: Guardar screenshots de erro (se algum deu ruim)
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: erro-screenshots-dejem
+          path: erro*.png
+          if-no-files-found: ignore
+          retention-days: 7
+
+      - name: Desconectar da VPN
+        if: always()
+        run: |
+          if sudo test -f /tmp/openconnect.pid; then
+            sudo kill "$(sudo cat /tmp/openconnect.pid)" || true
+          fi
+          sleep 2
+
+      - name: Enviar notificações no Telegram (canal do DEJEM)
+        if: always()
+        env:
+          TELEGRAM_BOT_TOKEN_DEJEM: ${{ secrets.TELEGRAM_BOT_TOKEN_DEJEM }}
+          TELEGRAM_CHAT_ID_DEJEM: ${{ secrets.TELEGRAM_CHAT_ID_DEJEM }}
+          MODULO_LABEL_DEJEM: ${{ vars.MODULO_LABEL_DEJEM }}
+        run: stdbuf -oL -eL node notificar_dejem.js
+
+      - name: Marcar job como falho (se algo deu errado)
+        if: steps.vpn.outcome == 'failure' || steps.checagem.outcome == 'failure'
+        run: exit 1
+
+      - name: Salvar lista de escalas já avisadas (DEJEM)
+        if: always()
+        run: |
+          git config user.name "monitor-dejem-bot"
+          git config user.email "actions@users.noreply.github.com"
+          git add seen_dejem.json || true
+          git diff --cached --quiet || git commit -m "Atualiza escalas do DEJEM já avisadas [skip ci]"
+          git push || true
