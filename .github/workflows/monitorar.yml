@@ -21,6 +21,9 @@ on:
 # Necessário pra o workflow poder commitar o arquivo de "já avisados" de volta no repositório
 permissions:
   contents: write
+  # Necessário pra esse workflow poder disparar o do DEJEM automaticamente
+  # ao terminar (ver último passo, "Disparar checagem do DEJEM").
+  actions: write
 
 concurrency:
   group: monitor-escalas-pmesp
@@ -214,3 +217,31 @@ jobs:
           git add seen.json ultimo_resumo.json || true
           git diff --cached --quiet || git commit -m "Atualiza escalas já avisadas [skip ci]"
           git push || true
+
+      # ⚠️ CORREÇÃO 16/08/2026 (a pedido do usuário, depois de confirmar que
+      # o gateway de VPN da PMESP DERRUBA uma conexão quando outra tenta
+      # conectar com a mesma conta — testado na prática, print real do erro
+      # "O gateway seguro encerrou a conexão VPN"): a Delegada e o DEJEM não
+      # podem rodar ao mesmo tempo de jeito nenhum.
+      #
+      # Solução: corrente UNIDIRECIONAL. A Delegada continua sendo disparada
+      # pelo cron-job.org a cada 30min (sem mudança nisso); ao terminar, ela
+      # dispara o DEJEM aqui embaixo. O DEJEM, por sua vez, NÃO dispara nada
+      # de volta — ele só espera o próximo ciclo natural do cron-job.org.
+      # Isso garante que nunca rodam juntos, mantendo o ritmo de 30 em 30min
+      # já comprovado seguro (evita repetir o problema de 05/08: relogins em
+      # corrente sem pausa deixaram o sistema da PMESP instável).
+      #
+      # "if: always()": dispara o DEJEM mesmo se a Delegada tiver falhado ou
+      # sido pulada em alguma área — o DEJEM é independente, não deveria
+      # ficar esperando a Delegada dar 100% certo pra rodar a vez dele.
+      - name: Disparar checagem do DEJEM (corrente sequencial)
+        if: always()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          curl -s -X POST \
+            -H "Authorization: Bearer $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/${{ github.repository }}/actions/workflows/monitorar_dejem.yml/dispatches" \
+            -d '{"ref":"${{ github.ref_name }}"}'
