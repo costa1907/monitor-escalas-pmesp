@@ -47,6 +47,18 @@ jobs:
       - name: Baixar código do repositório
         uses: actions/checkout@v7
 
+      # ⚠️ CORREÇÃO 18/08/2026 (bug real, visto em log): o GitHub configura os
+      # próprios servidores pra tentar primeiro um espelho de pacotes da Azure
+      # (azure.archive.ubuntu.com). Quando esse espelho está instável, o apt
+      # fica tentando e falhando repetidamente antes de desistir e cair pro
+      # espelho padrão — isso já consumiu os 40min inteiros do job numa
+      # execução real, cancelando tudo sem nem chegar a rodar a checagem.
+      # Pulando direto pro espelho padrão mundial, evita essa trava por
+      # completo (custo: alguns segundos a mais nos dias em que o espelho da
+      # Azure estava funcionando bem — imperceptível no tempo total do robô).
+      - name: Evitar espelho instável do Azure para pacotes do Ubuntu
+        run: echo "http://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt
+
       - name: Configurar Node.js
         uses: actions/setup-node@v7
         with:
@@ -151,8 +163,6 @@ jobs:
           LOGIN_URL: ${{ vars.LOGIN_URL }}
           NODE_ENV: production
           FORCE_COLOR: "0"
-        # Continua mesmo se der erro aqui — precisamos rodar os passos seguintes
-        # (screenshot, desconectar VPN, notificar) mesmo assim.
         continue-on-error: true
         id: checagem
         run: stdbuf -oL -eL node monitor.js
@@ -163,11 +173,6 @@ jobs:
           echo '{"erro":"A VPN não conseguiu conectar (ou o DNS interno não respondeu a tempo). Provavelmente instabilidade temporária do servidor VPN da PMESP.","novos":[],"resultadoPorArea":[]}' > resultado.json
 
       - name: Guardar screenshots de erro (se algum deu ruim)
-        # "always()" (não só na falha do step inteiro): desde a correção de
-        # 31/07/2026, uma AISP específica pode falhar e deixar sua própria
-        # screenshot (erro_aisp_XXXXX_tN.png) mesmo que o run geral termine
-        # como "sucesso" (porque as outras AISPs deram certo). Sem isso, essas
-        # screenshots nunca seriam enviadas como artefato.
         if: always()
         uses: actions/upload-artifact@v7
         with:
@@ -189,16 +194,10 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          # Rótulo do módulo mostrado no resumo (ex: "[M1]"). Opcional — se não
-          # configurada aqui, o código já usa "M1" como padrão automaticamente.
           MODULO_LABEL: ${{ vars.MODULO_LABEL }}
         run: stdbuf -oL -eL node notificar.js
 
       - name: Limpar resumo duplicado (2º bot)
-        # Bot separado (admin no mesmo canal) que apaga a mensagem de resumo
-        # anterior quando ela é idêntica à que acabou de ser enviada (mesmos
-        # números, só a data/hora muda) — evita acumular resumos repetidos
-        # "Nenhuma novidade" no canal. Ver dedupe_resumo.js.
         if: always()
         env:
           TELEGRAM_APAGADOR_TOKEN: ${{ secrets.TELEGRAM_APAGADOR_TOKEN }}
@@ -218,23 +217,6 @@ jobs:
           git diff --cached --quiet || git commit -m "Atualiza escalas já avisadas [skip ci]"
           git push || true
 
-      # ⚠️ CORREÇÃO 16/08/2026 (a pedido do usuário, depois de confirmar que
-      # o gateway de VPN da PMESP DERRUBA uma conexão quando outra tenta
-      # conectar com a mesma conta — testado na prática, print real do erro
-      # "O gateway seguro encerrou a conexão VPN"): a Delegada e o DEJEM não
-      # podem rodar ao mesmo tempo de jeito nenhum.
-      #
-      # Solução: corrente UNIDIRECIONAL. A Delegada continua sendo disparada
-      # pelo cron-job.org a cada 30min (sem mudança nisso); ao terminar, ela
-      # dispara o DEJEM aqui embaixo. O DEJEM, por sua vez, NÃO dispara nada
-      # de volta — ele só espera o próximo ciclo natural do cron-job.org.
-      # Isso garante que nunca rodam juntos, mantendo o ritmo de 30 em 30min
-      # já comprovado seguro (evita repetir o problema de 05/08: relogins em
-      # corrente sem pausa deixaram o sistema da PMESP instável).
-      #
-      # "if: always()": dispara o DEJEM mesmo se a Delegada tiver falhado ou
-      # sido pulada em alguma área — o DEJEM é independente, não deveria
-      # ficar esperando a Delegada dar 100% certo pra rodar a vez dele.
       - name: Disparar checagem do DEJEM (corrente sequencial)
         if: always()
         env:
