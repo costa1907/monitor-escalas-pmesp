@@ -741,7 +741,24 @@ async function pesquisarEscalas(page1, aisp, onErro) {
         console.log("   ⚠️ Removidas " + (resultados.length - resultadosSemDuplicata.length) + " escala(s) duplicada(s) (provável página repetida) da AISP " + aisp + ".");
     }
 
-    return { linhas: resultadosSemDuplicata, totalEsperado: totalEsperado };
+    // ⚠️ CORREÇÃO 18/08/2026 (mesma correção aplicada na Delegada, a pedido
+    // do usuário — ver monitor.js pra detalhes completos): a PMESP lança
+    // lotes de escalas em sequência rápida. Se o robô estava passando pelas
+    // páginas EXATAMENTE durante um lançamento desses, algumas escalas do
+    // meio do lote podem não existir ainda no instante em que a página foi
+    // lida. Relê o "Total de Registros" mais uma vez no final — se o total
+    // MUDOU pra mais, sinaliza pro chamador perseguir até estabilizar.
+    var totalNoFinal = await embFrameHandle.evaluate(_lerTotalRegistros).catch(() => null);
+    var cresceuDuranteLeitura = false;
+    if (totalNoFinal !== null && totalEsperado !== null && totalNoFinal > totalEsperado) {
+        console.log("   ⚠️ O total de registros da AISP " + aisp + " MUDOU durante a leitura (era " +
+            totalEsperado + ", agora é " + totalNoFinal + ") — provável lançamento de escalas em andamento. " +
+            "Tratando como captura incompleta pra ser refeita.");
+        totalEsperado = totalNoFinal;
+        cresceuDuranteLeitura = true;
+    }
+
+    return { linhas: resultadosSemDuplicata, totalEsperado: totalEsperado, cresceuDuranteLeitura: cresceuDuranteLeitura };
   }
 }
 
@@ -864,7 +881,21 @@ async function pesquisarEscalas(page1, aisp, onErro) {
             // Paulista: leu 0 registros com sucesso, a reconfirmação deu
             // timeout, e o resultado válido foi perdido à toa.
             var melhorResultado = null;
-            for (var tentativaAisp = 1; tentativaAisp <= MAX_TENTATIVAS_AISP; tentativaAisp++) {
+
+            // ⚠️ CORREÇÃO 18/08/2026 (mesma correção da Delegada, a pedido do
+            // usuário — ver monitor.js pra detalhes completos): separa dois
+            // motivos de "captura incompleta". Erro de execução continua com
+            // o limite de sempre (MAX_TENTATIVAS_AISP = 3). Quando o motivo é
+            // a PMESP lançando um lote de escalas NA HORA, o robô persegue
+            // até o número parar de crescer, sem contar isso contra o limite
+            // normal — só com um teto de tempo (5min) de segurança.
+            var tentativaAisp = 0;
+            var tentativaCrescimento = 0;
+            var inicioPerseguicaoAisp = Date.now();
+            var LIMITE_PERSEGUICAO_CRESCIMENTO_MS = 5 * 60 * 1000; // 5 minutos
+
+            while (tentativaAisp < MAX_TENTATIVAS_AISP) {
+                tentativaAisp++;
                 // IMPORTANTE (bug real corrigido): pesquisarEscalas pode lançar exceção
                 // (ex: timeout esperando o campo de AISP aparecer, por lentidão pontual
                 // do site) — antes isso derrubava a checagem INTEIRA e perdia o progresso
@@ -913,6 +944,25 @@ async function pesquisarEscalas(page1, aisp, onErro) {
                     continue;
                 }
                 if (completo) break;
+
+                if (resultadoBusca.cresceuDuranteLeitura) {
+                    // O motivo de estar incompleto é lançamento em andamento, não erro —
+                    // devolve essa tentativa pro "orçamento" de erro (não deveria contar).
+                    tentativaAisp--;
+                    tentativaCrescimento++;
+                    if (Date.now() - inicioPerseguicaoAisp > LIMITE_PERSEGUICAO_CRESCIMENTO_MS) {
+                        console.log("⏱️ Mais de 5min perseguindo um lançamento em andamento na AISP " + aisp +
+                            " (" + resultadoBusca.linhas.length + "/" + resultadoBusca.totalEsperado + ") — " +
+                            "desistindo por agora e ENVIANDO o que já foi capturado (as que ainda faltarem entram " +
+                            "no radar como novas no próximo ciclo, sem duplicar as que já foram avisadas agora).");
+                        resultadoBusca.aceitarComoParcial = true;
+                        break;
+                    }
+                    console.log("🆕 A AISP " + aisp + " ainda está recebendo escalas novas (lançamento em andamento — " +
+                        "perseguição " + tentativaCrescimento + ") — tentando de novo sem contar como erro...");
+                    continue;
+                }
+
                 if (tentativaAisp < MAX_TENTATIVAS_AISP) {
                     console.log("⚠️ Só capturei " + resultadoBusca.linhas.length + "/" + resultadoBusca.totalEsperado +
                         " escalas da AISP " + aisp + " — refazendo a busca dessa AISP do zero (tentativa " + (tentativaAisp + 1) + "/" + MAX_TENTATIVAS_AISP + ")...");
@@ -983,7 +1033,8 @@ async function pesquisarEscalas(page1, aisp, onErro) {
             // paginação por ID (ver pesquisarEscalas), capturas incompletas
             // ficaram raras, então esse custo quase nunca aparece na prática.
             var capturaIncompleta = resultadoBusca.totalEsperado !== null &&
-                linhas.length < resultadoBusca.totalEsperado;
+                linhas.length < resultadoBusca.totalEsperado &&
+                !resultadoBusca.aceitarComoParcial;
 
             // ⚠️ CORREÇÃO 07/08/2026 (bug real, visto em log): "zero falso".
             // Quando a grade responde direito, ela informa "Total de Registros: N"
@@ -1023,8 +1074,19 @@ async function pesquisarEscalas(page1, aisp, onErro) {
             // saudável, então zera o contador do disjuntor.
             falhasSeguidas = 0;
 
-            console.log("AISP " + aisp + " (" + _nomeDaAisp(aisp) + "): " + linhas.length + " linha(s) na grade.");
-            resultadoPorArea.push({ aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length });
+            if (resultadoBusca.aceitarComoParcial) {
+                console.log("AISP " + aisp + " (" + _nomeDaAisp(aisp) + "): " + linhas.length + "/" +
+                    resultadoBusca.totalEsperado + " linha(s) — aceita como parcial (lançamento em andamento " +
+                    "há mais de 5min), enviando o que foi capturado. Pode faltar 1-2 escalas dessa AISP pro " +
+                    "próximo ciclo, se a PMESP ainda não tiver terminado de lançar tudo.");
+                resultadoPorArea.push({
+                    aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length,
+                    parcialAceita: true, capturado: linhas.length, esperado: resultadoBusca.totalEsperado
+                });
+            } else {
+                console.log("AISP " + aisp + " (" + _nomeDaAisp(aisp) + "): " + linhas.length + " linha(s) na grade.");
+                resultadoPorArea.push({ aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length });
+            }
             for (const l of linhas) {
                 var chave = _identidadeDaEscala(aisp, l.data, l.escalaId);
                 if (!vistos.has(chave)) {
