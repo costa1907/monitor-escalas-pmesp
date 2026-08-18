@@ -30,6 +30,11 @@ jobs:
       - name: Baixar código do repositório
         uses: actions/checkout@v7
 
+      # Mesma correção aplicada no workflow da Delegada — ver comentário lá
+      # (monitorar.yml) pra detalhes completos.
+      - name: Evitar espelho instável do Azure para pacotes do Ubuntu
+        run: echo "http://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt
+
       - name: Configurar Node.js
         uses: actions/setup-node@v7
         with:
