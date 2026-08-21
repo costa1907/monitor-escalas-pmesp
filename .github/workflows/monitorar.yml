@@ -172,14 +172,12 @@ jobs:
         run: |
           echo '{"erro":"A VPN não conseguiu conectar (ou o DNS interno não respondeu a tempo). Provavelmente instabilidade temporária do servidor VPN da PMESP.","novos":[],"resultadoPorArea":[]}' > resultado.json
 
-      - name: Guardar screenshots de erro (se algum deu ruim)
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: erro-screenshots
-          path: erro*.png
-          if-no-files-found: ignore
-          retention-days: 7
+      # ⚠️ CORREÇÃO 20/08/2026 (a pedido do usuário): removido o passo de
+      # upload de screenshots de erro. A funcionalidade em si já tinha sido
+      # limitada antes (ver monitor.js), mas mesmo assim essa etapa de
+      # UPLOAD travou "Em execução..." por mais de 20 minutos num run real,
+      # fazendo o job inteiro (que devia levar ~23min) ser cancelado só
+      # depois de 45 minutos. Como não é mais necessária, foi removida.
 
       - name: Desconectar da VPN
         if: always()
