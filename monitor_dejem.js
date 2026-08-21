@@ -773,25 +773,12 @@ async function pesquisarEscalas(page1, aisp, onErro) {
     // Cada screenshot leva um rótulo único no nome do arquivo (ex: erro_login.png,
     // erro_aisp_85759_t1.png) — antes só existia um "erro.png" fixo, que a 2ª
     // falha do mesmo run já sobrescrevia, perdendo a evidência da 1ª.
-    // ⚠️ CORREÇÃO 10/08/2026 (bug real, medido em log): quando a página está
-    // travada, tirar screenshot TAMBÉM trava — e o padrão do Playwright é
-    // esperar 30 SEGUNDOS antes de desistir. Num run real isso apareceu 13
-    // vezes e queimou 6min30 sozinho, só tentando fotografar telas quebradas.
-    // Como a screenshot serve apenas pra debug (não faz o robô funcionar),
-    // agora tem prazo curto (5s) e teto de 3 por execução — o bastante pra
-    // investigar um problema, sem virar o gargalo do run.
-    var screenshotsTiradas = 0;
-    var MAX_SCREENSHOTS = 3;
-    async function tirarScreenshotErro(pagina, rotulo) {
-        if (!pagina) return;
-        if (screenshotsTiradas >= MAX_SCREENSHOTS) return;
-        screenshotsTiradas++;
-        var nomeArquivo = "erro" + (rotulo ? ("_" + rotulo) : "") + ".png";
-        try {
-            await pagina.screenshot({ path: path.join(__dirname, nomeArquivo), fullPage: true, timeout: 5000 });
-        } catch (e) {
-            console.error("⚠️ Não consegui tirar a screenshot de erro:", e.message);
-        }
+    // ⚠️ CORREÇÃO 20/08/2026 (mesma correção da Delegada, a pedido do
+    // usuário — ver monitor.js pra detalhes completos): a funcionalidade de
+    // screenshot de erro foi REMOVIDA por completo. A etapa de UPLOAD dela
+    // travou um run real por mais de 20 minutos.
+    async function tirarScreenshotErro() {
+        // intencionalmente vazia
     }
 
     // ⚠️ Orçamento de tempo (CORREÇÃO 31/07/2026): o job do GitHub Actions tem um
