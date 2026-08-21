@@ -195,12 +195,14 @@ jobs:
           MODULO_LABEL: ${{ vars.MODULO_LABEL }}
         run: stdbuf -oL -eL node notificar.js
 
-      - name: Limpar resumo duplicado (2º bot)
-        if: always()
-        env:
-          TELEGRAM_APAGADOR_TOKEN: ${{ secrets.TELEGRAM_APAGADOR_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: node dedupe_resumo.js
+      # ⚠️ CORREÇÃO 20/08/2026 (a pedido do usuário): removido o passo do bot
+      # apagador de resumo duplicado (dedupe_resumo.js). Desde que o resumo
+      # de fim de checagem ("🔎 Checagem concluída!") foi removido do
+      # notificar.js — só ficaram os avisos de escala nova —, esse bot não
+      # tem mais nenhum resumo pra encontrar/apagar; ele só rodava à toa,
+      # sem fazer nada útil. O arquivo dedupe_resumo.js pode continuar no
+      # repositório sem problema (só não é mais chamado por aqui), caso o
+      # resumo volte a existir no futuro.
 
       - name: Marcar job como falho (se algo deu errado)
         if: steps.vpn.outcome == 'failure' || steps.checagem.outcome == 'failure'
