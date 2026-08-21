@@ -940,14 +940,18 @@ async function pesquisarEscalas(page1, aisp, onErro) {
                     continue;
                 }
                 var completo = resultadoBusca.totalEsperado === null || resultadoBusca.linhas.length >= resultadoBusca.totalEsperado;
-                // ⚠️ RESTAURADO 05/08/2026: essa reconfirmação chegou a ser removida
-                // (parecia desperdício, já que o login agora é único), mas o run
-                // seguinte foi MUITO pior — sem ela, uma área com resultado parcial
-                // (40/41) caía direto no caminho de "refazer a busca do zero", essa
-                // renavegação falhava, e a rede de segurança de "descartar sessão e
-                // relogar" virava bola de neve: login atrás de login, 10/18 áreas em
-                // 22min contra 18/18 antes. Mantida como estava.
-                if (completo && resultadoBusca.totalEsperado === 0 && tentativaAisp === 1) {
+                // ⚠️ CORREÇÃO 21/08/2026 (a pedido do usuário, log real do DEJEM): a
+                // reconfirmação de "0 registros" foi criada na época em que CADA
+                // AISP fazia login do zero — fazia sentido desconfiar de um "0" logo
+                // após um login recém-feito. Hoje o login é ÚNICO pra checagem
+                // inteira, então esse risco só existe de verdade na 1ª área do run;
+                // da 2ª em diante, a sessão já provou que funciona (já leu dado real
+                // antes). Continuar reconfirmando em TODAS as áreas só pagava um
+                // preço à toa — no DEJEM (a maioria das 14 áreas costuma estar
+                // vazia mesmo) isso quase dobrava o tempo do run inteiro (13 áreas
+                // "0" pagando reconfirmação = ~3min30 desperdiçados num run de
+                // 7min21). Restrito a "i === 0" (só a 1ª área do índice do run).
+                if (completo && resultadoBusca.totalEsperado === 0 && tentativaAisp === 1 && i === 0) {
                     console.log("   ℹ️ Veio com 0 registros na 1ª tentativa — confirmando com mais uma antes de aceitar (pode ser efeito do login ainda assentando)...");
                     continue;
                 }
