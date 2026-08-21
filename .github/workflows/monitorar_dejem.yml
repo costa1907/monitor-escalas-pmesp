@@ -129,14 +129,8 @@ jobs:
         run: |
           echo '{"erro":"A VPN não conseguiu conectar (ou o DNS interno não respondeu a tempo). Provavelmente instabilidade temporária do servidor VPN da PMESP.","novos":[],"resultadoPorArea":[]}' > resultado_dejem.json
 
-      - name: Guardar screenshots de erro (se algum deu ruim)
-        if: always()
-        uses: actions/upload-artifact@v7
-        with:
-          name: erro-screenshots-dejem
-          path: erro*.png
-          if-no-files-found: ignore
-          retention-days: 7
+      # Mesma correção aplicada no workflow da Delegada — ver comentário lá
+      # (monitorar.yml) pra detalhes completos.
 
       - name: Desconectar da VPN
         if: always()
