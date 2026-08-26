@@ -557,18 +557,20 @@ async function pesquisarEscalas(page1, aisp, onErro) {
 
     // Retrato da grade ANTES de mexer em qualquer coisa — essa é a base de
     // comparação usada logo abaixo, pra garantir que detectamos uma mudança real.
-    var fingerprintAntes = JSON.stringify(await embFrameHandle.evaluate(_lerLinhasGrade));
+    var fingerprintAntes = JSON.stringify(await comLimiteDeTempo(
+        embFrameHandle.evaluate(_lerLinhasGrade), 10000, "leitura da grade (fingerprint inicial)"
+    ).catch(() => null));
 
     await embFrame.locator("#vIDFAGPGEOSST").fill(aisp).catch(() => {});
-    await preencherCampoGX(embFrameHandle, "vIDFAGPGEOSST", aisp);
-    await preencherCampoGX(embFrameHandle, "vDATINI", dataIni);
-    await preencherCampoGX(embFrameHandle, "vDATFIM", dataFim);
+    await comLimiteDeTempo(preencherCampoGX(embFrameHandle, "vIDFAGPGEOSST", aisp), 10000, "preencher AISP").catch(() => {});
+    await comLimiteDeTempo(preencherCampoGX(embFrameHandle, "vDATINI", dataIni), 10000, "preencher data início").catch(() => {});
+    await comLimiteDeTempo(preencherCampoGX(embFrameHandle, "vDATFIM", dataFim), 10000, "preencher data fim").catch(() => {});
 
     // Mesma pausa curta que o robô Tampermonkey dá antes de clicar em Pesquisar
     // (DELAY_PRE_PESQUISA_MS) — dá tempo do GeneXus assimilar os campos preenchidos
     // via injeção antes do clique, evitando pesquisar com o formulário "pela metade".
     await page1.waitForTimeout(150);
-    var clicouProcurar = await clicarProcurarGX(embFrameHandle);
+    var clicouProcurar = await comLimiteDeTempo(clicarProcurarGX(embFrameHandle), 10000, "clique em Procurar").catch(() => false);
     if (!clicouProcurar) {
         // fallback de segurança: clique "real" via Playwright, caso o botão IMAGE1
         // não exista por algum motivo (ex: id mudou numa atualização do site)
@@ -594,7 +596,14 @@ async function pesquisarEscalas(page1, aisp, onErro) {
     var candidatoLinhas = null;
     for (var t = 0; t < 40; t++) {
         await page1.waitForTimeout(300);
-        var linhasTeste = await embFrameHandle.evaluate(_lerLinhasGrade);
+        var linhasTeste;
+        try {
+            linhasTeste = await comLimiteDeTempo(
+                embFrameHandle.evaluate(_lerLinhasGrade), 10000, "leitura da grade (estabilização)"
+            );
+        } catch (e) {
+            continue; // travou/demorou — trata como "ainda não mudou" e tenta de novo no próximo ciclo
+        }
         var fpTeste = JSON.stringify(linhasTeste);
         if (fpTeste === fingerprintAntes) {
             candidatoFingerprint = null; // ainda não mudou nada — reseta candidato
@@ -616,12 +625,16 @@ async function pesquisarEscalas(page1, aisp, onErro) {
             linhasAtuais = candidatoLinhas;
             fingerprintAtual = candidatoFingerprint;
         } else {
-            linhasAtuais = await embFrameHandle.evaluate(_lerLinhasGrade);
+            linhasAtuais = await comLimiteDeTempo(
+                embFrameHandle.evaluate(_lerLinhasGrade), 10000, "leitura da grade (último recurso)"
+            ).catch(() => []);
             fingerprintAtual = JSON.stringify(linhasAtuais);
         }
     }
 
-    var totalEsperado = await embFrameHandle.evaluate(_lerTotalRegistros).catch(() => null);
+    var totalEsperado = await comLimiteDeTempo(
+        embFrameHandle.evaluate(_lerTotalRegistros), 10000, "leitura do total (início)"
+    ).catch(() => null);
     if (totalEsperado !== null) {
         console.log("   (a grade indica " + totalEsperado + " registro(s) no total pra essa AISP)");
     }
@@ -658,10 +671,10 @@ async function pesquisarEscalas(page1, aisp, onErro) {
         // nem tentar clicar em "Próxima" de novo.
         if (totalEsperado !== null && resultados.length >= totalEsperado) break;
 
-        var temProxima = await embFrameHandle.evaluate(() => {
+        var temProxima = await comLimiteDeTempo(embFrameHandle.evaluate(() => {
             var btn = document.getElementById("NEXT");
             return !!(btn && btn.style.display !== "none" && btn.style.visibility !== "hidden" && !btn.disabled);
-        });
+        }), 10000, "checagem do botão Próxima").catch(() => false);
         if (!temProxima) break;
 
         // Procura por uma leitura que traga pelo menos um ID inédito. Se em ~9s
@@ -748,7 +761,9 @@ async function pesquisarEscalas(page1, aisp, onErro) {
     // meio do lote podem não existir ainda no instante em que a página foi
     // lida. Relê o "Total de Registros" mais uma vez no final — se o total
     // MUDOU pra mais, sinaliza pro chamador perseguir até estabilizar.
-    var totalNoFinal = await embFrameHandle.evaluate(_lerTotalRegistros).catch(() => null);
+    var totalNoFinal = await comLimiteDeTempo(
+        embFrameHandle.evaluate(_lerTotalRegistros), 10000, "leitura do total (fim)"
+    ).catch(() => null);
     var cresceuDuranteLeitura = false;
     if (totalNoFinal !== null && totalEsperado !== null && totalNoFinal > totalEsperado) {
         console.log("   ⚠️ O total de registros da AISP " + aisp + " MUDOU durante a leitura (era " +
