@@ -17,7 +17,14 @@ const fs = require("fs");
 const path = require("path");
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID; // canal do M1
+// ⚠️ ADICIONADO 26/08/2026 (a pedido do usuário): canal separado pro M5,
+// rodando no MESMO bot/login do M1 (só a notificação é separada). Se essa
+// variável ainda não existir (nova, precisa ser cadastrada no GitHub), as
+// escalas do M5 NÃO caem no canal do M1 por engano — ficam de fora com um
+// aviso no log, até a variável ser configurada. Isso é de propósito: melhor
+// não notificar do que vazar escala do M5 pra quem só assina o M1.
+const TELEGRAM_CHAT_ID_M5 = process.env.TELEGRAM_CHAT_ID_M5;
 // Rótulo do módulo/turno mostrado no resumo (ex: "[M1]"). Configurável via
 // variável do GitHub Actions (vars.MODULO_LABEL no monitorar.yml) — assim,
 // se um dia esse mesmo código for reaproveitado pra outro módulo (M2, M3...),
@@ -40,9 +47,10 @@ const RESULTADO_PATH = path.join(__dirname, "resultado.json");
 const PAUSA_ENTRE_ENVIOS_MS = 3300;
 function dormir(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
-async function enviarTelegram(texto) {
-    if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-        console.warn("⚠️ TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID não configurados — pulando envio.");
+async function enviarTelegram(texto, chatIdDestino) {
+    var destino = chatIdDestino || TELEGRAM_CHAT_ID;
+    if (!TELEGRAM_BOT_TOKEN || !destino) {
+        console.warn("⚠️ TELEGRAM_BOT_TOKEN / chat_id de destino não configurados — pulando envio.");
         return;
     }
     var url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage";
@@ -51,7 +59,7 @@ async function enviarTelegram(texto) {
         var resp = await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID, text: texto, parse_mode: "HTML" })
+            body: JSON.stringify({ chat_id: destino, text: texto, parse_mode: "HTML" })
         });
         var data = await resp.json().catch(() => ({}));
         if (data.ok) return true;
@@ -89,7 +97,7 @@ async function enviarTelegram(texto) {
 function agruparPorArea(novos) {
     var porAisp = new Map();
     novos.forEach(function (n) {
-        if (!porAisp.has(n.aisp)) porAisp.set(n.aisp, { nome: n.nome, aisp: n.aisp, itens: [] });
+        if (!porAisp.has(n.aisp)) porAisp.set(n.aisp, { nome: n.nome, aisp: n.aisp, modulo: n.modulo || "M1", itens: [] });
         porAisp.get(n.aisp).itens.push(n);
     });
     return Array.from(porAisp.values());
@@ -218,11 +226,18 @@ function montarMensagensDoGrupo(grupo) {
 
     var primeiraMensagem = true;
     for (const grupo of grupos) {
+        var destino = grupo.modulo === "M5" ? TELEGRAM_CHAT_ID_M5 : TELEGRAM_CHAT_ID;
+        if (grupo.modulo === "M5" && !TELEGRAM_CHAT_ID_M5) {
+            console.warn("⚠️ Escala(s) nova(s) da AISP " + grupo.aisp + " (" + grupo.nome + ", módulo M5) " +
+                "encontradas, mas TELEGRAM_CHAT_ID_M5 ainda não está configurado — pulando esse grupo " +
+                "pra não vazar pro canal do M1. Cadastra essa variável e essas escalas aparecem no próximo ciclo.");
+            continue;
+        }
         var mensagensDoGrupo = montarMensagensDoGrupo(grupo);
         for (const msg of mensagensDoGrupo) {
             if (!primeiraMensagem) await dormir(PAUSA_ENTRE_ENVIOS_MS);
             primeiraMensagem = false;
-            await enviarTelegram(msg);
+            await enviarTelegram(msg, destino);
         }
     }
 
