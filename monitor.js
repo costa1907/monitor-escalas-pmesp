@@ -59,28 +59,42 @@ const RESULTADO_PATH = path.join(__dirname, "resultado.json");
 // ela sobrescreve essa lista (só os códigos, separados por vírgula) e monitora
 // só as áreas escolhidas em vez de todas.
 const TODAS_AREAS_DELEGADA = [
-    { nome: "25 de Março", aisp: "85760" },
-    { nome: "Florêncio de Abreu", aisp: "85759" },
-    { nome: "José Paulino", aisp: "85758" },
-    { nome: "Triângulo Histórico", aisp: "85757" },
-    { nome: "Paulista", aisp: "85756" },
-    { nome: "Centro Novo", aisp: "85755" },
-    { nome: "Liberdade", aisp: "85754" },
-    { nome: "Roosevelt", aisp: "85753" },
-    { nome: "Sé", aisp: "85752" },
-    { nome: "Marechal Deodoro", aisp: "85751" },
-    { nome: "Santa Casa", aisp: "85750" },
-    { nome: "Cambuci", aisp: "85749" },
-    { nome: "Santa Ifigênia", aisp: "85748" },
-    { nome: "Volante Cenas Abertas de Uso", aisp: "85745" },
-    { nome: "Oriente", aisp: "85744" },
-    { nome: "Concórdia", aisp: "85743" },
-    { nome: "Brás", aisp: "85742" },
-    { nome: "Feira da Madrugada", aisp: "85741" }
+    { nome: "25 de Março", aisp: "85760", modulo: "M1" },
+    { nome: "Florêncio de Abreu", aisp: "85759", modulo: "M1" },
+    { nome: "José Paulino", aisp: "85758", modulo: "M1" },
+    { nome: "Triângulo Histórico", aisp: "85757", modulo: "M1" },
+    { nome: "Paulista", aisp: "85756", modulo: "M1" },
+    { nome: "Centro Novo", aisp: "85755", modulo: "M1" },
+    { nome: "Liberdade", aisp: "85754", modulo: "M1" },
+    { nome: "Roosevelt", aisp: "85753", modulo: "M1" },
+    { nome: "Sé", aisp: "85752", modulo: "M1" },
+    { nome: "Marechal Deodoro", aisp: "85751", modulo: "M1" },
+    { nome: "Santa Casa", aisp: "85750", modulo: "M1" },
+    { nome: "Cambuci", aisp: "85749", modulo: "M1" },
+    { nome: "Santa Ifigênia", aisp: "85748", modulo: "M1" },
+    { nome: "Volante Cenas Abertas de Uso", aisp: "85745", modulo: "M1" },
+    { nome: "Oriente", aisp: "85744", modulo: "M1" },
+    { nome: "Concórdia", aisp: "85743", modulo: "M1" },
+    { nome: "Brás", aisp: "85742", modulo: "M1" },
+    { nome: "Feira da Madrugada", aisp: "85741", modulo: "M1" },
+    // ⚠️ ADICIONADO 26/08/2026 (a pedido do usuário): 6 novas áreas do M5.
+    // Rodam na MESMA sessão/login que o M1 (economiza tempo, evita logar
+    // duas vezes) — só a notificação é que vai pra um canal do Telegram
+    // separado, via o campo "modulo" abaixo (ver notificar.js).
+    { nome: "Carlos Caldeira Filho", aisp: "85697", modulo: "M5" },
+    { nome: "12 de Outubro", aisp: "85859", modulo: "M5" },
+    { nome: "Cardeal/Batata/Teodoro Sampaio", aisp: "85860", modulo: "M5" },
+    { nome: "Barra Funda", aisp: "85861", modulo: "M5" },
+    { nome: "Oscar Freire / Clínicas", aisp: "85862", modulo: "M5" },
+    { nome: "Butantã", aisp: "85864", modulo: "M5" }
 ];
 function _nomeDaAisp(aisp) {
     var a = TODAS_AREAS_DELEGADA.find(function (x) { return x.aisp === aisp; });
     return a ? a.nome : aisp;
+}
+function _moduloDaAisp(aisp) {
+    var a = TODAS_AREAS_DELEGADA.find(function (x) { return x.aisp === aisp; });
+    return a ? a.modulo : "M1"; // default seguro: se por algum motivo não achar, trata como M1
 }
 const AISPS_MONITORADAS = process.env.PMESP_AISP
     ? process.env.PMESP_AISP.split(",").map(s => s.trim()).filter(Boolean)
@@ -1125,7 +1139,7 @@ async function pesquisarEscalas(page1, aisp, onErro) {
                 var chave = _identidadeDaEscala(aisp, l.data, l.escalaId);
                 if (!vistos.has(chave)) {
                     vistos.add(chave);
-                    novos.push({ aisp: aisp, nome: _nomeDaAisp(aisp), ...l });
+                    novos.push({ aisp: aisp, nome: _nomeDaAisp(aisp), modulo: _moduloDaAisp(aisp), ...l });
                 }
             }
         }
