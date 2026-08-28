@@ -516,53 +516,78 @@ async function clicarProcurarGX(frame) {
 // num estado transitório (ex: "[]" ainda carregando) que já diferia de null —
 // fazendo o código aceitar uma leitura vazia/incompleta como se already fosse o
 // resultado final, mesmo a busca ainda não tendo terminado de verdade.
-async function pesquisarEscalas(page1, aisp, onErro) {
+async function pesquisarEscalas(page1, aisp, onErro, precisaTelaCompleta) {
     console.log("🔎 Pesquisando " + _nomeDaAisp(aisp) + " (AISP " + aisp + ")...");
 
     var dataIni = formatarDataBR(hoje());
     var dataFim = formatarDataBR(new Date(hoje().getTime() + JANELA_DIAS * 24 * 60 * 60 * 1000));
 
-    // ⚠️ CORREÇÃO 02/08/2026: agora recebe a MESMA página já logada (uma sessão
-    // só pro run inteiro) e só renavega pra tela de escalas pela URL direta a
-    // cada AISP — antes cada área fazia login do zero (~15-20s a mais por área),
-    // porque acreditávamos que a sessão travava. Descobrimos pelo robô
-    // Tampermonkey do usuário que o culpado era o MENU, não a sessão (ver
-    // comentário em abrirTelaPesquisaDelegada).
     var embFrame = null;
     var embFrameHandle = null;
     var ultimoErroAbertura = null;
     var MAX_TENTATIVAS_ABERTURA = 2;
-    for (var tentativaAbertura = 1; tentativaAbertura <= MAX_TENTATIVAS_ABERTURA; tentativaAbertura++) {
+
+    // ⚠️ OTIMIZAÇÃO 28/08/2026 (a pedido do usuário, log real analisado): evita
+    // recarregar a página inteira (abrirTelaPesquisaDelegada) a cada área. A
+    // busca de uma AISP deixa a página exatamente na tela de pesquisa — a
+    // próxima área pode reaproveitar essa MESMA página, só trocando o campo
+    // AISP e clicando em Procurar de novo, sem recarregar nada. Isso corta um
+    // custo fixo de ~5-10s por área (navegação + esperas fixas + tentativa de
+    // achar a tela de "declaração de apto", que só existe na 1ª vez da sessão).
+    //
+    // SEGURANÇA: só pula o reload quando NÃO é a 1ª área da sessão (ou seja,
+    // não acabou de logar/relogar) E o campo AISP já está visível numa
+    // checagem RÁPIDA (5s, não 20s). Se essa checagem falhar por qualquer
+    // motivo, cai automaticamente pro caminho completo de sempre — nunca
+    // segue adiante com a página num estado desconhecido. O pior caso
+    // possível é não ganhar velocidade NESSA área específica; nunca é ler
+    // dado errado ou incompleto.
+    if (!precisaTelaCompleta) {
         try {
-            await abrirTelaPesquisaDelegada(page1);
             embFrame = page1.frameLocator('iframe[name="Embpage"]');
-            // IMPORTANTE (bug real corrigido): pegar a referência bruta do frame (via
-            // page1.frame({name:...})) ANTES do iframe terminar de assentar é
-            // arriscado — se o postback ainda estiver trocando o conteúdo do iframe
-            // nesse instante, essa referência pode ficar presa numa versão velha/
-            // prestes a ser destruída, e toda leitura feita nela depois fica "morta"
-            // pra sempre (grade sempre vazia, sem nenhum erro visível). Por isso a
-            // ordem é: primeiro espera o campo aparecer usando o FRAME LOCATOR (que
-            // sempre resolve pro iframe ATUAL) — só DEPOIS disso confirmado é que
-            // pegamos a referência bruta do frame pra usar com .evaluate().
-            await embFrame.locator("#vIDFAGPGEOSST").waitFor({ state: "visible", timeout: 20000 });
+            await embFrame.locator("#vIDFAGPGEOSST").waitFor({ state: "visible", timeout: 5000 });
             embFrameHandle = page1.frame({ name: "Embpage" });
-            if (!embFrameHandle) throw new Error("Não achei o iframe Embpage — a estrutura da página pode ter mudado.");
-            ultimoErroAbertura = null;
-            break;
+            if (!embFrameHandle) throw new Error("Não achei o iframe Embpage (caminho rápido).");
         } catch (e) {
-            ultimoErroAbertura = e;
-            console.log("   ⚠️ Não consegui abrir a tela de pesquisa pra AISP " + aisp + " (tentativa " + tentativaAbertura + "/" + MAX_TENTATIVAS_ABERTURA + "): " + e.message);
-            if (typeof onErro === "function") await onErro(page1, "aisp_" + aisp + "_t" + tentativaAbertura);
-            // ⚠️ CORREÇÃO 06/08/2026 (bug real, visto em log): antes não havia
-            // NENHUMA pausa entre as tentativas. Quando o erro é instantâneo
-            // (ex: ERR_CONNECTION_REFUSED, quando o servidor recusa a conexão em
-            // vez de demorar), o robô disparava 6 tentativas em menos de 1
-            // segundo — martelando um servidor que já estava com problema.
-            // Agora espera antes de tentar de novo, dando tempo pro site se
-            // recuperar de uma instabilidade passageira.
-            if (tentativaAbertura < MAX_TENTATIVAS_ABERTURA) {
-                await page1.waitForTimeout(3000);
+            console.log("   ℹ️ Caminho rápido não disponível pra AISP " + aisp + " (" + e.message + ") — caindo pro reload completo dessa área.");
+            embFrame = null;
+            embFrameHandle = null;
+        }
+    }
+
+    if (!embFrameHandle) {
+        for (var tentativaAbertura = 1; tentativaAbertura <= MAX_TENTATIVAS_ABERTURA; tentativaAbertura++) {
+            try {
+                await abrirTelaPesquisaDelegada(page1);
+                embFrame = page1.frameLocator('iframe[name="Embpage"]');
+                // IMPORTANTE (bug real corrigido): pegar a referência bruta do frame (via
+                // page1.frame({name:...})) ANTES do iframe terminar de assentar é
+                // arriscado — se o postback ainda estiver trocando o conteúdo do iframe
+                // nesse instante, essa referência pode ficar presa numa versão velha/
+                // prestes a ser destruída, e toda leitura feita nela depois fica "morta"
+                // pra sempre (grade sempre vazia, sem nenhum erro visível). Por isso a
+                // ordem é: primeiro espera o campo aparecer usando o FRAME LOCATOR (que
+                // sempre resolve pro iframe ATUAL) — só DEPOIS disso confirmado é que
+                // pegamos a referência bruta do frame pra usar com .evaluate().
+                await embFrame.locator("#vIDFAGPGEOSST").waitFor({ state: "visible", timeout: 20000 });
+                embFrameHandle = page1.frame({ name: "Embpage" });
+                if (!embFrameHandle) throw new Error("Não achei o iframe Embpage — a estrutura da página pode ter mudado.");
+                ultimoErroAbertura = null;
+                break;
+            } catch (e) {
+                ultimoErroAbertura = e;
+                console.log("   ⚠️ Não consegui abrir a tela de pesquisa pra AISP " + aisp + " (tentativa " + tentativaAbertura + "/" + MAX_TENTATIVAS_ABERTURA + "): " + e.message);
+                if (typeof onErro === "function") await onErro(page1, "aisp_" + aisp + "_t" + tentativaAbertura);
+                // ⚠️ CORREÇÃO 06/08/2026 (bug real, visto em log): antes não havia
+                // NENHUMA pausa entre as tentativas. Quando o erro é instantâneo
+                // (ex: ERR_CONNECTION_REFUSED, quando o servidor recusa a conexão em
+                // vez de demorar), o robô disparava 6 tentativas em menos de 1
+                // segundo — martelando um servidor que já estava com problema.
+                // Agora espera antes de tentar de novo, dando tempo pro site se
+                // recuperar de uma instabilidade passageira.
+                if (tentativaAbertura < MAX_TENTATIVAS_ABERTURA) {
+                    await page1.waitForTimeout(3000);
+                }
             }
         }
     }
@@ -859,6 +884,11 @@ async function pesquisarEscalas(page1, aisp, onErro) {
     // era o menu em cascata, não a sessão (ver abrirTelaPesquisaDelegada). Isso
     // economiza ~15-20s por área (~5 min no run completo de 18 áreas).
     var paginaSessao = null;
+    // ⚠️ OTIMIZAÇÃO 28/08/2026: rastreia se a PRÓXIMA busca precisa recarregar
+    // a tela inteira (só verdade logo depois de logar/relogar) ou pode
+    // reaproveitar a página já aberta (ver pesquisarEscalas). Fica true de
+    // novo sempre que um login novo acontece.
+    var precisaTelaCompleta = true;
     var resultadoPorArea = []; // { aisp, nome, total } — TODAS as áreas verificadas, mesmo com 0
 
     // ⚠️ CORREÇÃO 06/08/2026 ("disjuntor", bug real visto em log): quando o site
@@ -982,12 +1012,14 @@ async function pesquisarEscalas(page1, aisp, onErro) {
                         try {
                             paginaSessao = await fazerLoginEAbrirDelegada(context, tirarScreenshotErro);
                             falhasDeLoginSeguidas = 0; // login deu certo — reseta o contador específico
+                            precisaTelaCompleta = true; // login novo/relogin: a próxima busca precisa da tela cheia
                         } catch (erroLogin) {
                             falhasDeLoginSeguidas++;
                             throw erroLogin; // deixa cair no catch de fora, que já sabe tratar (log + continue)
                         }
                     }
-                    resultadoBusca = await pesquisarEscalas(paginaSessao, aisp, tirarScreenshotErro);
+                    resultadoBusca = await pesquisarEscalas(paginaSessao, aisp, tirarScreenshotErro, precisaTelaCompleta);
+                    precisaTelaCompleta = false; // a partir daqui, a página já está aberta — próximas áreas usam o caminho rápido
                     if (!melhorResultado || resultadoBusca.linhas.length > melhorResultado.linhas.length) {
                         melhorResultado = resultadoBusca;
                     }
