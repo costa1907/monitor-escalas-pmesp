@@ -86,7 +86,19 @@ const TODAS_AREAS_DELEGADA = [
     { nome: "Cardeal/Batata/Teodoro Sampaio", aisp: "85860", modulo: "M5" },
     { nome: "Barra Funda", aisp: "85861", modulo: "M5" },
     { nome: "Oscar Freire / Clínicas", aisp: "85862", modulo: "M5" },
-    { nome: "Butantã", aisp: "85864", modulo: "M5" }
+    { nome: "Butantã", aisp: "85864", modulo: "M5" },
+    // ⚠️ ADICIONADO 27/08/2026 (a pedido do usuário): 9 novas áreas do M3.
+    // Mesmo esquema do M5 — roda na mesma sessão/login, notificação vai
+    // pra um canal separado (ver notificar.js).
+    { nome: "Guapira", aisp: "85717", modulo: "M3" },
+    { nome: "Parapuã", aisp: "85718", modulo: "M3" },
+    { nome: "Voluntários da Pátria", aisp: "85719", modulo: "M3" },
+    { nome: "Tietê / Santana", aisp: "85720", modulo: "M3" },
+    { nome: "Tucuruvi", aisp: "85768", modulo: "M3" },
+    { nome: "Itaberaba", aisp: "85772", modulo: "M3" },
+    { nome: "São Gonçalo", aisp: "85773", modulo: "M3" },
+    { nome: "Sezefredo Fagundes", aisp: "85775", modulo: "M3" },
+    { nome: "Luiz Stamatis", aisp: "85776", modulo: "M3" }
 ];
 function _nomeDaAisp(aisp) {
     var a = TODAS_AREAS_DELEGADA.find(function (x) { return x.aisp === aisp; });
