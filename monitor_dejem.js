@@ -612,7 +612,12 @@ async function pesquisarEscalas(page1, aisp, onErro, precisaTelaCompleta) {
             continue; // travou/demorou — trata como "ainda não mudou" e tenta de novo no próximo ciclo
         }
         var fpTeste = JSON.stringify(linhasTeste);
-        if (fpTeste === fingerprintAntes) {
+        // ⚠️ CORREÇÃO 28/08/2026 (mesma correção da Delegada, a pedido do
+        // usuário — ver monitor.js pra detalhes completos): trata leitura
+        // vazia como sempre transitória, não só quando bate com o
+        // fingerprint anterior — necessário porque o caminho rápido faz o
+        // fingerprint anterior deixar de ser vazio.
+        if (fpTeste === fingerprintAntes || linhasTeste.length === 0) {
             candidatoFingerprint = null; // ainda não mudou nada — reseta candidato
             continue;
         }
