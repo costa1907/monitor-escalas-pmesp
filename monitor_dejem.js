@@ -501,49 +501,34 @@ async function pesquisarEscalas(page1, aisp, onErro, precisaTelaCompleta) {
     var ultimoErroAbertura = null;
     var MAX_TENTATIVAS_ABERTURA = 2;
 
-    // ⚠️ OTIMIZAÇÃO 28/08/2026 (mesma otimização da Delegada, a pedido do
-    // usuário — ver monitor.js pra detalhes completos): pula o reload
-    // completo da página quando não é a 1ª área da sessão, com fallback
-    // automático pro reload completo se a checagem rápida (5s) falhar.
-    if (!precisaTelaCompleta) {
+    // ⚠️ REVERTIDO 28/08/2026 (mesmo revert da Delegada, a pedido do usuário
+    // — ver monitor.js pra detalhes completos): a otimização de "caminho
+    // rápido" falhou de forma consistente. Voltado a recarregar a página em
+    // TODA área, do jeito comprovado.
+    for (var tentativaAbertura = 1; tentativaAbertura <= MAX_TENTATIVAS_ABERTURA; tentativaAbertura++) {
         try {
+            await abrirTelaPesquisaDelegada(page1);
             embFrame = page1.frameLocator('iframe[name="Embpage"]');
-            await embFrame.locator("#vIDFAGPGEOSST").waitFor({ state: "visible", timeout: 5000 });
+            // IMPORTANTE (bug real corrigido): pegar a referência bruta do frame (via
+            // page1.frame({name:...})) ANTES do iframe terminar de assentar é
+            // arriscado — se o postback ainda estiver trocando o conteúdo do iframe
+            // nesse instante, essa referência pode ficar presa numa versão velha/
+            // prestes a ser destruída, e toda leitura feita nela depois fica "morta"
+            // pra sempre (grade sempre vazia, sem nenhum erro visível). Por isso a
+            // ordem é: primeiro espera o campo aparecer usando o FRAME LOCATOR (que
+            // sempre resolve pro iframe ATUAL) — só DEPOIS disso confirmado é que
+            // pegamos a referência bruta do frame pra usar com .evaluate().
+            await embFrame.locator("#vIDFAGPGEOSST").waitFor({ state: "visible", timeout: 20000 });
             embFrameHandle = page1.frame({ name: "Embpage" });
-            if (!embFrameHandle) throw new Error("Não achei o iframe Embpage (caminho rápido).");
+            if (!embFrameHandle) throw new Error("Não achei o iframe Embpage — a estrutura da página pode ter mudado.");
+            ultimoErroAbertura = null;
+            break;
         } catch (e) {
-            console.log("   ℹ️ Caminho rápido não disponível pra AISP " + aisp + " (" + e.message + ") — caindo pro reload completo dessa área.");
-            embFrame = null;
-            embFrameHandle = null;
-        }
-    }
-
-    if (!embFrameHandle) {
-        for (var tentativaAbertura = 1; tentativaAbertura <= MAX_TENTATIVAS_ABERTURA; tentativaAbertura++) {
-            try {
-                await abrirTelaPesquisaDelegada(page1);
-                embFrame = page1.frameLocator('iframe[name="Embpage"]');
-                // IMPORTANTE (bug real corrigido): pegar a referência bruta do frame (via
-                // page1.frame({name:...})) ANTES do iframe terminar de assentar é
-                // arriscado — se o postback ainda estiver trocando o conteúdo do iframe
-                // nesse instante, essa referência pode ficar presa numa versão velha/
-                // prestes a ser destruída, e toda leitura feita nela depois fica "morta"
-                // pra sempre (grade sempre vazia, sem nenhum erro visível). Por isso a
-                // ordem é: primeiro espera o campo aparecer usando o FRAME LOCATOR (que
-                // sempre resolve pro iframe ATUAL) — só DEPOIS disso confirmado é que
-                // pegamos a referência bruta do frame pra usar com .evaluate().
-                await embFrame.locator("#vIDFAGPGEOSST").waitFor({ state: "visible", timeout: 20000 });
-                embFrameHandle = page1.frame({ name: "Embpage" });
-                if (!embFrameHandle) throw new Error("Não achei o iframe Embpage — a estrutura da página pode ter mudado.");
-                ultimoErroAbertura = null;
-                break;
-            } catch (e) {
-                ultimoErroAbertura = e;
-                console.log("   ⚠️ Não consegui abrir a tela de pesquisa pra AISP " + aisp + " (tentativa " + tentativaAbertura + "/" + MAX_TENTATIVAS_ABERTURA + "): " + e.message);
-                if (typeof onErro === "function") await onErro(page1, "aisp_" + aisp + "_t" + tentativaAbertura);
-                if (tentativaAbertura < MAX_TENTATIVAS_ABERTURA) {
-                    await page1.waitForTimeout(3000);
-                }
+            ultimoErroAbertura = e;
+            console.log("   ⚠️ Não consegui abrir a tela de pesquisa pra AISP " + aisp + " (tentativa " + tentativaAbertura + "/" + MAX_TENTATIVAS_ABERTURA + "): " + e.message);
+            if (typeof onErro === "function") await onErro(page1, "aisp_" + aisp + "_t" + tentativaAbertura);
+            if (tentativaAbertura < MAX_TENTATIVAS_ABERTURA) {
+                await page1.waitForTimeout(3000);
             }
         }
     }
