@@ -17,14 +17,24 @@ const fs = require("fs");
 const path = require("path");
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID; // canal do M1
-// ⚠️ ADICIONADO 26/08/2026 (a pedido do usuário): canal separado pro M5,
-// rodando no MESMO bot/login do M1 (só a notificação é separada). Se essa
-// variável ainda não existir (nova, precisa ser cadastrada no GitHub), as
-// escalas do M5 NÃO caem no canal do M1 por engano — ficam de fora com um
-// aviso no log, até a variável ser configurada. Isso é de propósito: melhor
-// não notificar do que vazar escala do M5 pra quem só assina o M1.
-const TELEGRAM_CHAT_ID_M5 = process.env.TELEGRAM_CHAT_ID_M5;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID; // canal do M1 (padrão)
+// ⚠️ GENERALIZADO 27/08/2026 (a pedido do usuário, ao acrescentar o M3):
+// em vez de checar módulo por módulo individualmente (o que já causou um
+// bug real — esqueci de conectar o TELEGRAM_CHAT_ID_M5 no workflow), os
+// módulos além do M1 agora vivem num mapa só. Pra adicionar um módulo novo
+// no futuro, basta: 1) adicionar aqui uma linha nesse mapa, 2) cadastrar o
+// secret TELEGRAM_CHAT_ID_M<N> no GitHub, 3) adicionar essa mesma variável
+// na seção "env" do passo "Enviar notificações no Telegram" no monitorar.yml
+// (esse último passo é o que falhou silenciosamente da vez passada — não
+// esquecer!).
+const CANAL_POR_MODULO = {
+    M5: process.env.TELEGRAM_CHAT_ID_M5,
+    M3: process.env.TELEGRAM_CHAT_ID_M3
+};
+function canalParaModulo(modulo) {
+    if (!modulo || modulo === "M1") return TELEGRAM_CHAT_ID;
+    return CANAL_POR_MODULO[modulo]; // undefined se esse módulo não tiver canal configurado ainda
+}
 // Rótulo do módulo/turno mostrado no resumo (ex: "[M1]"). Configurável via
 // variável do GitHub Actions (vars.MODULO_LABEL no monitorar.yml) — assim,
 // se um dia esse mesmo código for reaproveitado pra outro módulo (M2, M3...),
@@ -226,11 +236,12 @@ function montarMensagensDoGrupo(grupo) {
 
     var primeiraMensagem = true;
     for (const grupo of grupos) {
-        var destino = grupo.modulo === "M5" ? TELEGRAM_CHAT_ID_M5 : TELEGRAM_CHAT_ID;
-        if (grupo.modulo === "M5" && !TELEGRAM_CHAT_ID_M5) {
-            console.warn("⚠️ Escala(s) nova(s) da AISP " + grupo.aisp + " (" + grupo.nome + ", módulo M5) " +
-                "encontradas, mas TELEGRAM_CHAT_ID_M5 ainda não está configurado — pulando esse grupo " +
-                "pra não vazar pro canal do M1. Cadastra essa variável e essas escalas aparecem no próximo ciclo.");
+        var destino = canalParaModulo(grupo.modulo);
+        if (grupo.modulo !== "M1" && !destino) {
+            console.warn("⚠️ Escala(s) nova(s) da AISP " + grupo.aisp + " (" + grupo.nome + ", módulo " + grupo.modulo + ") " +
+                "encontradas, mas o canal desse módulo ainda não está configurado — pulando esse grupo " +
+                "pra não vazar pro canal errado. Cadastra a variável TELEGRAM_CHAT_ID_" + grupo.modulo +
+                " e essas escalas aparecem no próximo ciclo.");
             continue;
         }
         var mensagensDoGrupo = montarMensagensDoGrupo(grupo);
