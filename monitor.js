@@ -527,37 +527,18 @@ async function pesquisarEscalas(page1, aisp, onErro, precisaTelaCompleta) {
     var ultimoErroAbertura = null;
     var MAX_TENTATIVAS_ABERTURA = 2;
 
-    // ⚠️ OTIMIZAÇÃO 28/08/2026 (a pedido do usuário, log real analisado): evita
-    // recarregar a página inteira (abrirTelaPesquisaDelegada) a cada área. A
-    // busca de uma AISP deixa a página exatamente na tela de pesquisa — a
-    // próxima área pode reaproveitar essa MESMA página, só trocando o campo
-    // AISP e clicando em Procurar de novo, sem recarregar nada. Isso corta um
-    // custo fixo de ~5-10s por área (navegação + esperas fixas + tentativa de
-    // achar a tela de "declaração de apto", que só existe na 1ª vez da sessão).
-    //
-    // SEGURANÇA: só pula o reload quando NÃO é a 1ª área da sessão (ou seja,
-    // não acabou de logar/relogar) E o campo AISP já está visível numa
-    // checagem RÁPIDA (5s, não 20s). Se essa checagem falhar por qualquer
-    // motivo, cai automaticamente pro caminho completo de sempre — nunca
-    // segue adiante com a página num estado desconhecido. O pior caso
-    // possível é não ganhar velocidade NESSA área específica; nunca é ler
-    // dado errado ou incompleto.
-    if (!precisaTelaCompleta) {
+    // ⚠️ REVERTIDO 28/08/2026 (a pedido do usuário, confirmado por log real):
+    // a otimização de "caminho rápido" (pular o reload de página entre
+    // áreas) foi testada e FALHOU de forma consistente — a busca nunca
+    // atualizava de verdade sem o reload completo, mesmo esperando o tempo
+    // certo. Isso é bem parecido com o bug antigo do menu em cascata (que só
+    // funcionava uma vez por página) — o botão "Procurar" parece ter a mesma
+    // limitação. Voltado a recarregar a página em TODA área, do jeito
+    // comprovado. O parâmetro "precisaTelaCompleta" continua existindo na
+    // assinatura (não usado aqui dentro) só pra não precisar mexer no
+    // main(), que ainda passa esse argumento — é inofensivo mantê-lo.
+    for (var tentativaAbertura = 1; tentativaAbertura <= MAX_TENTATIVAS_ABERTURA; tentativaAbertura++) {
         try {
-            embFrame = page1.frameLocator('iframe[name="Embpage"]');
-            await embFrame.locator("#vIDFAGPGEOSST").waitFor({ state: "visible", timeout: 5000 });
-            embFrameHandle = page1.frame({ name: "Embpage" });
-            if (!embFrameHandle) throw new Error("Não achei o iframe Embpage (caminho rápido).");
-        } catch (e) {
-            console.log("   ℹ️ Caminho rápido não disponível pra AISP " + aisp + " (" + e.message + ") — caindo pro reload completo dessa área.");
-            embFrame = null;
-            embFrameHandle = null;
-        }
-    }
-
-    if (!embFrameHandle) {
-        for (var tentativaAbertura = 1; tentativaAbertura <= MAX_TENTATIVAS_ABERTURA; tentativaAbertura++) {
-            try {
                 await abrirTelaPesquisaDelegada(page1);
                 embFrame = page1.frameLocator('iframe[name="Embpage"]');
                 // IMPORTANTE (bug real corrigido): pegar a referência bruta do frame (via
@@ -590,7 +571,6 @@ async function pesquisarEscalas(page1, aisp, onErro, precisaTelaCompleta) {
                 }
             }
         }
-    }
     if (!embFrameHandle) {
         throw ultimoErroAbertura || new Error("Não consegui abrir a tela de pesquisa pra AISP " + aisp + " depois de " + MAX_TENTATIVAS_ABERTURA + " tentativas.");
     }
