@@ -892,8 +892,30 @@ async function pesquisarEscalas(page1, aisp, onErro) {
         var falhasSeguidas = 0;
         var LIMITE_FALHAS_SEGUIDAS = 3;
 
+        // ⚠️ CORREÇÃO 28/08/2026 (a pedido do usuário, log real analisado): o
+        // disjuntor acima conta FALHAS DE ÁREA (busca lenta, timeout pontual) —
+        // faz sentido esperar 3 delas, porque uma área lenta não significa que
+        // as outras vão falhar também. Mas se o LOGIN em si está quebrado (nem
+        // consegue abrir a tela de pesquisa), NADA vai funcionar naquele
+        // momento — não faz sentido gastar 3 áreas x 3 tentativas cada (9
+        // ciclos de login fracassado) só pra descobrir isso. Num log real,
+        // isso queimou uns 30 MINUTOS até o disjuntor normal finalmente
+        // disparar. Agora, 2 falhas de LOGIN seguidas (não de busca) já
+        // param o run na hora — é um sinal bem mais forte e rápido de "hoje
+        // não vai dar" do que esperar a métrica de falha por área.
+        var falhasDeLoginSeguidas = 0;
+        var LIMITE_FALHAS_LOGIN = 2;
+
         for (var i = 0; i < AISPS_MONITORADAS.length; i++) {
             var aisp = AISPS_MONITORADAS[i];
+
+            if (falhasDeLoginSeguidas >= LIMITE_FALHAS_LOGIN) {
+                console.log("🛑 " + falhasDeLoginSeguidas + " tentativas de LOGIN seguidas falharam (não é a busca, é o " +
+                    "login em si que não completa) — sinal forte de que o sistema da PMESP está fora do ar agora. " +
+                    "Parando o run bem mais cedo do que o disjuntor normal, pra não gastar 20-30min tentando logar " +
+                    "à toa. A próxima checagem (30 min) tenta de novo.");
+                break;
+            }
 
             if (falhasSeguidas >= LIMITE_FALHAS_SEGUIDAS) {
                 console.log("🛑 " + falhasSeguidas + " áreas falharam SEGUIDAS — o sistema da PMESP parece estar fora do ar " +
@@ -957,7 +979,13 @@ async function pesquisarEscalas(page1, aisp, onErro) {
                     // só acontece em caso de problema, o normal é logar uma vez só.
                     if (!paginaSessao || paginaSessao.isClosed()) {
                         console.log("🔑 Fazendo login" + (paginaSessao ? " de novo (a sessão anterior caiu)" : "") + "...");
-                        paginaSessao = await fazerLoginEAbrirDelegada(context, tirarScreenshotErro);
+                        try {
+                            paginaSessao = await fazerLoginEAbrirDelegada(context, tirarScreenshotErro);
+                            falhasDeLoginSeguidas = 0; // login deu certo — reseta o contador específico
+                        } catch (erroLogin) {
+                            falhasDeLoginSeguidas++;
+                            throw erroLogin; // deixa cair no catch de fora, que já sabe tratar (log + continue)
+                        }
                     }
                     resultadoBusca = await pesquisarEscalas(paginaSessao, aisp, tirarScreenshotErro);
                     if (!melhorResultado || resultadoBusca.linhas.length > melhorResultado.linhas.length) {
