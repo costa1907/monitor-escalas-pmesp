@@ -656,7 +656,28 @@ async function pesquisarEscalas(page1, aisp, onErro, precisaTelaCompleta) {
             continue; // travou/demorou — trata como "ainda não mudou" e tenta de novo no próximo ciclo
         }
         var fpTeste = JSON.stringify(linhasTeste);
-        if (fpTeste === fingerprintAntes) {
+        // ⚠️ CORREÇÃO 28/08/2026 (bug real, causado pela própria otimização do
+        // "caminho rápido" — log real analisado): essa checagem originalmente só
+        // comparava com "fingerprintAntes" pra ignorar o instante 'limpo' da
+        // troca de área. Isso funcionava perfeitamente quando cada área
+        // recarregava a página do zero, porque nesse caso o "fingerprintAntes"
+        // já COMEÇAVA vazio — e o instante limpo da troca batia com ele.
+        //
+        // Só que com o caminho rápido (sem reload), "fingerprintAntes" passou a
+        // ser a grade CHEIA da ÁREA ANTERIOR (não mais vazia!). O instante
+        // limpo da troca de área não batia mais com esse fingerprint cheio, e
+        // por isso deixava de ser filtrado — sendo aceito de vez como se fosse
+        // o resultado final (0 escalas), mesmo quando a área tinha dado de
+        // verdade. Consequência real: 3 áreas seguidas vieram "vazias" por
+        // engano, disparando o disjuntor à toa.
+        //
+        // Correção: além de comparar com "fingerprintAntes", trata QUALQUER
+        // leitura vazia como transitória por padrão — nunca aceita "0 escalas"
+        // como resultado estável dentro desse loop de espera. Uma área
+        // genuinamente vazia (0 escalas de verdade) ainda é capturada
+        // corretamente depois, pelo caminho de "último recurso" já existente
+        // logo abaixo, só que sem risco de confundir transição com resultado.
+        if (fpTeste === fingerprintAntes || linhasTeste.length === 0) {
             candidatoFingerprint = null; // ainda não mudou nada — reseta candidato
             continue;
         }
