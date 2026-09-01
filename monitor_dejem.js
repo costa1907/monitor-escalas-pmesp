@@ -44,6 +44,128 @@ const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
 
+// ─────────────────────────────────────────────────────────────────────────
+// ⚠️ ADICIONADO 01/09/2026 (mesma correção da Delegada, a pedido do usuário
+// — ver monitor.js pra detalhes completos): envio das notificações DIRETO
+// daqui, assim que cada área termina. Confirmado por teste real que o
+// Telegram é alcançável mesmo com a VPN da PMESP ligada. Usa as credenciais
+// PRÓPRIAS do DEJEM (bot/canal separados da Delegada, como já era).
+// ─────────────────────────────────────────────────────────────────────────
+const TELEGRAM_BOT_TOKEN_TEMPO_REAL = process.env.TELEGRAM_BOT_TOKEN_DEJEM;
+const TELEGRAM_CHAT_ID_TEMPO_REAL = process.env.TELEGRAM_CHAT_ID_DEJEM;
+const PAUSA_ENTRE_ENVIOS_MS = 3300;
+function dormir(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+async function enviarTelegram(texto) {
+    if (!TELEGRAM_BOT_TOKEN_TEMPO_REAL || !TELEGRAM_CHAT_ID_TEMPO_REAL) {
+        console.warn("⚠️ TELEGRAM_BOT_TOKEN_DEJEM / TELEGRAM_CHAT_ID_DEJEM não configurados — pulando envio em tempo real.");
+        return false;
+    }
+    var url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN_TEMPO_REAL + "/sendMessage";
+    var MAX_TENTATIVAS = 5;
+    for (var tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
+        var resp;
+        try {
+            resp = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_TEMPO_REAL, text: texto, parse_mode: "HTML" })
+            });
+        } catch (e) {
+            console.warn("⚠️ Erro de rede tentando enviar Telegram em tempo real (tentativa " + tentativa + "/" + MAX_TENTATIVAS + "): " + e.message);
+            await dormir(2000);
+            continue;
+        }
+        var data = await resp.json().catch(() => ({}));
+        if (data.ok) return true;
+        if (resp.status === 429 && data.parameters && data.parameters.retry_after) {
+            var esperaMs = (data.parameters.retry_after + 1) * 1000;
+            console.warn("⏳ Telegram pediu pra esperar " + data.parameters.retry_after + "s (tentativa " + tentativa + "/" + MAX_TENTATIVAS + ")...");
+            await dormir(esperaMs);
+            continue;
+        }
+        console.error("❌ Falha ao enviar Telegram em tempo real:", JSON.stringify(data));
+        return false;
+    }
+    console.error("❌ Desisti de enviar essa mensagem em tempo real depois de " + MAX_TENTATIVAS + " tentativas.");
+    return false;
+}
+
+function abreviarAno(data) {
+    return String(data).replace(/\/\d{2}(\d{2})$/, "/$1");
+}
+
+function formatarLinhaEscala(n) {
+    return "📅 " + abreviarAno(n.data) + " 🆔 " + n.escalaId + " 🕐 " + n.horaIni + " x " + n.horaFim + "\n" +
+        "👥 Vagas: <b>" + (n.efetivoTotal || "?") + "</b>  |  Inscritos: " + (n.inscritos || "?") + "\n" +
+        "⏳ Limite Inscrição: " + (n.dataLimite || "?");
+}
+
+var LIMITE_SEGURO_CARACTERES = 3800;
+function montarMensagensDoGrupo(grupo) {
+    var mensagens = [];
+    var rodape = "\n\nMonitoramento em tempo real. Garanta sua inscrição utilizando o nosso robô: " +
+        "<a href=\"http://intranet.policiamilitar.sp.gov.br/\">saiba mais</a>.";
+    var partesTotal = 1;
+    (function calcularPartes() {
+        var tamanhoAtual = 0;
+        var partes = 1;
+        grupo.itens.forEach(function (n) {
+            var linha = formatarLinhaEscala(n) + "\n\n";
+            if (tamanhoAtual + linha.length > LIMITE_SEGURO_CARACTERES) { partes++; tamanhoAtual = 0; }
+            tamanhoAtual += linha.length;
+        });
+        partesTotal = partes;
+    })();
+
+    var parteAtual = 1;
+    var linhasAtuais = [];
+    var itensNaParte = 0;
+    function fecharParte() {
+        var cabecalho = "<b>" + itensNaParte + " escala(s) nova(s)</b>\n" +
+            "<b>" + grupo.nome + " (AISP " + grupo.aisp + ")" +
+            (partesTotal > 1 ? " (parte " + parteAtual + " | " + partesTotal + ")" : "") +
+            "</b>\n\n";
+        mensagens.push(cabecalho + linhasAtuais.join("\n\n") + rodape);
+        parteAtual++;
+        linhasAtuais = [];
+        itensNaParte = 0;
+    }
+
+    var tamanhoAcumulado = 0;
+    grupo.itens.forEach(function (n) {
+        var linha = formatarLinhaEscala(n);
+        if (tamanhoAcumulado + linha.length + 2 > LIMITE_SEGURO_CARACTERES && linhasAtuais.length > 0) {
+            fecharParte();
+            tamanhoAcumulado = 0;
+        }
+        linhasAtuais.push(linha);
+        itensNaParte++;
+        tamanhoAcumulado += linha.length + 2;
+    });
+    if (linhasAtuais.length > 0) fecharParte();
+
+    return mensagens;
+}
+
+var primeiraMensagemEnviada = false;
+async function enviarEscalasDaAreaAgora(aisp, nome, itensDaArea) {
+    if (!itensDaArea || itensDaArea.length === 0) return true;
+    var grupo = { nome: nome, aisp: aisp, itens: itensDaArea };
+    var mensagens = montarMensagensDoGrupo(grupo);
+    var tudoOk = true;
+    for (const msg of mensagens) {
+        if (primeiraMensagemEnviada) await dormir(PAUSA_ENTRE_ENVIOS_MS);
+        primeiraMensagemEnviada = true;
+        var ok = await enviarTelegram(msg);
+        if (!ok) tudoOk = false;
+    }
+    if (tudoOk) {
+        console.log("   📨 " + itensDaArea.length + " escala(s) nova(s) da AISP " + aisp + " (" + nome + ") já avisada(s) em tempo real.");
+    }
+    return tudoOk;
+}
+
 const PMESP_USUARIO = process.env.PMESP_USUARIO;
 const PMESP_SENHA = process.env.PMESP_SENHA;
 // ⚠️ Este script roda com a VPN da PMESP ligada, e a VPN vira o único caminho pra
@@ -781,6 +903,7 @@ async function pesquisarEscalas(page1, aisp, onErro, precisaTelaCompleta) {
     }
     var vistos = carregarVistos();
     var novos = [];
+    var novosPendentesDeEnvio = [];
     var browser = await chromium.launch({ headless: true });
     // Cada screenshot leva um rótulo único no nome do arquivo (ex: erro_login.png,
     // erro_aisp_85759_t1.png) — antes só existia um "erro.png" fixo, que a 2ª
@@ -1107,17 +1230,26 @@ async function pesquisarEscalas(page1, aisp, onErro, precisaTelaCompleta) {
                 console.log("AISP " + aisp + " (" + _nomeDaAisp(aisp) + "): " + linhas.length + " linha(s) na grade.");
                 resultadoPorArea.push({ aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length });
             }
+            var novosDestaArea = [];
             for (const l of linhas) {
                 var chave = _identidadeDaEscala(aisp, l.data, l.escalaId);
                 if (!vistos.has(chave)) {
                     vistos.add(chave);
-                    novos.push({ aisp: aisp, nome: _nomeDaAisp(aisp), ...l });
+                    var item = { aisp: aisp, nome: _nomeDaAisp(aisp), ...l };
+                    novos.push(item);
+                    novosDestaArea.push(item);
+                }
+            }
+            if (novosDestaArea.length > 0) {
+                var enviouTudoOk = await enviarEscalasDaAreaAgora(aisp, _nomeDaAisp(aisp), novosDestaArea);
+                if (!enviouTudoOk) {
+                    novosPendentesDeEnvio.push(...novosDestaArea);
                 }
             }
         }
     } catch (err) {
         console.error("❌ Erro durante a checagem:", err);
-        salvarResultado({ erro: String(err).slice(0, 300), novos: [], resultadoPorArea: resultadoPorArea });
+        salvarResultado({ erro: String(err).slice(0, 300), novos: novosPendentesDeEnvio, resultadoPorArea: resultadoPorArea });
         salvarVistos(vistos);
         await browser.close();
         process.exit(1);
@@ -1143,7 +1275,7 @@ async function pesquisarEscalas(page1, aisp, onErro, precisaTelaCompleta) {
     }
 
     var agora = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
-    salvarResultado({ agora: agora, novos: novos, resultadoPorArea: resultadoPorArea });
+    salvarResultado({ agora: agora, novos: novosPendentesDeEnvio, resultadoPorArea: resultadoPorArea });
 
     salvarVistos(vistos);
 })();
