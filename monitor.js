@@ -44,6 +44,155 @@ const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
 
+// ─────────────────────────────────────────────────────────────────────────
+// ⚠️ ADICIONADO 01/09/2026 (a pedido do usuário): envio das notificações
+// DIRETO daqui, assim que cada área termina — em vez de esperar a checagem
+// inteira acabar (e a VPN desligar) pra só então avisar no Telegram.
+//
+// Isso só foi possível porque um teste real confirmou que o Telegram É
+// alcançável mesmo com a VPN da PMESP ainda ligada (contrariando uma
+// suposição antiga documentada no notificar.js, que achava que dava
+// ETIMEDOUT). O teste mandou uma mensagem de verdade e ela chegou.
+//
+// Essas funções são cópias das que já existem no notificar.js (mesma lógica
+// de agrupar, formatar e enviar) — o notificar.js continua existindo como
+// rede de segurança pro final do run (cobre erro de VPN, e qualquer escala
+// que por algum motivo não tenha sido enviada aqui).
+// ─────────────────────────────────────────────────────────────────────────
+const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID; // canal do M1 (padrão)
+const CANAL_POR_MODULO = {
+    M5: process.env.TELEGRAM_CHAT_ID_M5,
+    M3: process.env.TELEGRAM_CHAT_ID_M3
+};
+function canalParaModulo(modulo) {
+    if (!modulo || modulo === "M1") return TELEGRAM_CHAT_ID;
+    return CANAL_POR_MODULO[modulo];
+}
+const PAUSA_ENTRE_ENVIOS_MS = 3300;
+function dormir(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+async function enviarTelegram(texto, chatIdDestino) {
+    var destino = chatIdDestino || TELEGRAM_CHAT_ID;
+    if (!TELEGRAM_BOT_TOKEN || !destino) {
+        console.warn("⚠️ TELEGRAM_BOT_TOKEN / chat_id de destino não configurados — pulando envio em tempo real.");
+        return false;
+    }
+    var url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage";
+    var MAX_TENTATIVAS = 5;
+    for (var tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
+        var resp;
+        try {
+            resp = await fetch(url, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: destino, text: texto, parse_mode: "HTML" })
+            });
+        } catch (e) {
+            console.warn("⚠️ Erro de rede tentando enviar Telegram em tempo real (tentativa " + tentativa + "/" + MAX_TENTATIVAS + "): " + e.message);
+            await dormir(2000);
+            continue;
+        }
+        var data = await resp.json().catch(() => ({}));
+        if (data.ok) return true;
+        if (resp.status === 429 && data.parameters && data.parameters.retry_after) {
+            var esperaMs = (data.parameters.retry_after + 1) * 1000;
+            console.warn("⏳ Telegram pediu pra esperar " + data.parameters.retry_after + "s (tentativa " + tentativa + "/" + MAX_TENTATIVAS + ")...");
+            await dormir(esperaMs);
+            continue;
+        }
+        console.error("❌ Falha ao enviar Telegram em tempo real:", JSON.stringify(data));
+        return false;
+    }
+    console.error("❌ Desisti de enviar essa mensagem em tempo real depois de " + MAX_TENTATIVAS + " tentativas.");
+    return false;
+}
+
+function abreviarAno(data) {
+    return String(data).replace(/\/\d{2}(\d{2})$/, "/$1");
+}
+
+function formatarLinhaEscala(n) {
+    return "📅 " + abreviarAno(n.data) + " 🆔 " + n.escalaId + " 🕐 " + n.horaIni + " x " + n.horaFim + "\n" +
+        "👥 Vagas: <b>" + (n.efetivoTotal || "?") + "</b>  |  Inscritos: " + (n.inscritos || "?") + "\n" +
+        "⏳ Limite Inscrição: " + (n.dataLimite || "?");
+}
+
+var LIMITE_SEGURO_CARACTERES = 3800;
+function montarMensagensDoGrupo(grupo) {
+    var mensagens = [];
+    var rodape = "\n\nMonitoramento em tempo real. Garanta sua inscrição utilizando o nosso robô: " +
+        "<a href=\"http://intranet.policiamilitar.sp.gov.br/\">saiba mais</a>.";
+    var partesTotal = 1;
+    (function calcularPartes() {
+        var tamanhoAtual = 0;
+        var partes = 1;
+        grupo.itens.forEach(function (n) {
+            var linha = formatarLinhaEscala(n) + "\n\n";
+            if (tamanhoAtual + linha.length > LIMITE_SEGURO_CARACTERES) { partes++; tamanhoAtual = 0; }
+            tamanhoAtual += linha.length;
+        });
+        partesTotal = partes;
+    })();
+
+    var parteAtual = 1;
+    var linhasAtuais = [];
+    var itensNaParte = 0;
+    function fecharParte() {
+        var cabecalho = "<b>" + itensNaParte + " escala(s) nova(s)</b>\n" +
+            "<b>" + grupo.nome + " (AISP " + grupo.aisp + ")" +
+            (partesTotal > 1 ? " (parte " + parteAtual + " | " + partesTotal + ")" : "") +
+            "</b>\n\n";
+        mensagens.push(cabecalho + linhasAtuais.join("\n\n") + rodape);
+        parteAtual++;
+        linhasAtuais = [];
+        itensNaParte = 0;
+    }
+
+    var tamanhoAcumulado = 0;
+    grupo.itens.forEach(function (n) {
+        var linha = formatarLinhaEscala(n);
+        if (tamanhoAcumulado + linha.length + 2 > LIMITE_SEGURO_CARACTERES && linhasAtuais.length > 0) {
+            fecharParte();
+            tamanhoAcumulado = 0;
+        }
+        linhasAtuais.push(linha);
+        itensNaParte++;
+        tamanhoAcumulado += linha.length + 2;
+    });
+    if (linhasAtuais.length > 0) fecharParte();
+
+    return mensagens;
+}
+
+// Envia AGORA as escalas novas de UMA área específica (assim que ela termina
+// de ser lida), em vez de esperar o resto da checagem. Retorna true se
+// mandou tudo com sucesso (ou não tinha nada pra mandar).
+var primeiraMensagemEnviada = false;
+async function enviarEscalasDaAreaAgora(aisp, nome, modulo, itensDaArea) {
+    if (!itensDaArea || itensDaArea.length === 0) return true;
+    var destino = canalParaModulo(modulo);
+    if (modulo !== "M1" && !destino) {
+        console.warn("⚠️ " + itensDaArea.length + " escala(s) nova(s) da AISP " + aisp + " (" + nome + ", módulo " + modulo + ") " +
+            "encontradas, mas o canal desse módulo ainda não está configurado — não dá pra mandar em tempo real. " +
+            "Vão ficar pro notificar.js tentar no final (via o canal certo, quando configurado).");
+        return false;
+    }
+    var grupo = { nome: nome, aisp: aisp, modulo: modulo, itens: itensDaArea };
+    var mensagens = montarMensagensDoGrupo(grupo);
+    var tudoOk = true;
+    for (const msg of mensagens) {
+        if (primeiraMensagemEnviada) await dormir(PAUSA_ENTRE_ENVIOS_MS);
+        primeiraMensagemEnviada = true;
+        var ok = await enviarTelegram(msg, destino);
+        if (!ok) tudoOk = false;
+    }
+    if (tudoOk) {
+        console.log("   📨 " + itensDaArea.length + " escala(s) nova(s) da AISP " + aisp + " (" + nome + ") já avisada(s) em tempo real.");
+    }
+    return tudoOk;
+}
+
 const PMESP_USUARIO = process.env.PMESP_USUARIO;
 const PMESP_SENHA = process.env.PMESP_SENHA;
 // ⚠️ Este script roda com a VPN da PMESP ligada, e a VPN vira o único caminho pra
@@ -848,6 +997,11 @@ async function pesquisarEscalas(page1, aisp, onErro, precisaTelaCompleta) {
     }
     var vistos = carregarVistos();
     var novos = [];
+    // Só as que FALHARAM no envio em tempo real ficam aqui — são as únicas
+    // que o notificar.js (rede de segurança do final do run) precisa tentar
+    // de novo. As que já foram enviadas com sucesso não entram aqui, pra não
+    // duplicar mensagem.
+    var novosPendentesDeEnvio = [];
     var browser = await chromium.launch({ headless: true });
     // Cada screenshot leva um rótulo único no nome do arquivo (ex: erro_login.png,
     // erro_aisp_85759_t1.png) — antes só existia um "erro.png" fixo, que a 2ª
@@ -1208,17 +1362,32 @@ async function pesquisarEscalas(page1, aisp, onErro, precisaTelaCompleta) {
                 console.log("AISP " + aisp + " (" + _nomeDaAisp(aisp) + "): " + linhas.length + " linha(s) na grade.");
                 resultadoPorArea.push({ aisp: aisp, nome: _nomeDaAisp(aisp), total: linhas.length });
             }
+            var novosDestaArea = [];
             for (const l of linhas) {
                 var chave = _identidadeDaEscala(aisp, l.data, l.escalaId);
                 if (!vistos.has(chave)) {
                     vistos.add(chave);
-                    novos.push({ aisp: aisp, nome: _nomeDaAisp(aisp), modulo: _moduloDaAisp(aisp), ...l });
+                    var item = { aisp: aisp, nome: _nomeDaAisp(aisp), modulo: _moduloDaAisp(aisp), ...l };
+                    novos.push(item);
+                    novosDestaArea.push(item);
+                }
+            }
+            // ⚠️ ADICIONADO 01/09/2026 (a pedido do usuário): manda AGORA as
+            // escalas novas dessa área, em vez de esperar a checagem inteira
+            // terminar. Uma falha aqui (rede, Telegram fora do ar, etc.) NÃO
+            // interrompe a checagem — a escala já foi marcada em "vistos" e
+            // continua em "novos", então o notificar.js do final do run ainda
+            // vai tentar mandar como rede de segurança.
+            if (novosDestaArea.length > 0) {
+                var enviouTudoOk = await enviarEscalasDaAreaAgora(aisp, _nomeDaAisp(aisp), _moduloDaAisp(aisp), novosDestaArea);
+                if (!enviouTudoOk) {
+                    novosPendentesDeEnvio.push(...novosDestaArea);
                 }
             }
         }
     } catch (err) {
         console.error("❌ Erro durante a checagem:", err);
-        salvarResultado({ erro: String(err).slice(0, 300), novos: [], resultadoPorArea: resultadoPorArea });
+        salvarResultado({ erro: String(err).slice(0, 300), novos: novosPendentesDeEnvio, resultadoPorArea: resultadoPorArea });
         salvarVistos(vistos);
         await browser.close();
         process.exit(1);
@@ -1244,7 +1413,7 @@ async function pesquisarEscalas(page1, aisp, onErro, precisaTelaCompleta) {
     }
 
     var agora = new Date().toLocaleString("pt-BR", { timeZone: "America/Sao_Paulo" });
-    salvarResultado({ agora: agora, novos: novos, resultadoPorArea: resultadoPorArea });
+    salvarResultado({ agora: agora, novos: novosPendentesDeEnvio, resultadoPorArea: resultadoPorArea });
 
     salvarVistos(vistos);
 })();
