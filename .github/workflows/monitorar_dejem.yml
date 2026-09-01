@@ -118,6 +118,11 @@ jobs:
           PMESP_AISP: ${{ vars.PMESP_AISP_DEJEM }}
           LOGIN_URL: ${{ vars.LOGIN_URL }}
           URL_TELA_ESCALAS_DEJEM: ${{ vars.URL_TELA_ESCALAS_DEJEM }}
+          # ⚠️ ADICIONADO 01/09/2026: o monitor_dejem.js agora manda as
+          # notificações direto, assim que cada área termina — ver
+          # monitorar.yml (Delegada) pra detalhes completos.
+          TELEGRAM_BOT_TOKEN_DEJEM: ${{ secrets.TELEGRAM_BOT_TOKEN_DEJEM }}
+          TELEGRAM_CHAT_ID_DEJEM: ${{ secrets.TELEGRAM_CHAT_ID_DEJEM }}
           NODE_ENV: production
           FORCE_COLOR: "0"
         continue-on-error: true
