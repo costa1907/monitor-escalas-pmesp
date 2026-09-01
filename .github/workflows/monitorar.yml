@@ -154,6 +154,22 @@ jobs:
           echo "    abra a etapa 'Rodar checagem de escalas' — o log completo, com"
           echo "    uma linha por AISP e por página, vai estar lá certinho."
 
+      # ⚠️ TESTE TEMPORÁRIO (28/08/2026) — só diagnóstico, sem função na
+      # checagem real. Descobre se a VPN bloqueia TUDO que não é da PMESP,
+      # ou só domínios específicos como o Telegram. Depois de rodar uma vez
+      # e ver o resultado, esse passo deve ser REMOVIDO.
+      - name: TESTE - Diagnosticar bloqueio de rede com VPN ligada
+        if: steps.vpn.outcome == 'success'
+        run: |
+          echo "--- Testando Telegram (já sabemos que deve falhar) ---"
+          curl -s -m 8 -o /dev/null -w "código: %{http_code}\n" https://api.telegram.org || echo "FALHOU (esperado)"
+          echo ""
+          echo "--- Testando um destino diferente (GitHub API) ---"
+          curl -s -m 8 -o /dev/null -w "código: %{http_code}\n" https://api.github.com || echo "FALHOU"
+          echo ""
+          echo "--- Testando o seu Worker do Cloudflare (bot de vendas) ---"
+          curl -s -m 8 -o /dev/null -w "código: %{http_code}\n" https://bot-vendas-escalas.thiago-costa1907.workers.dev || echo "FALHOU"
+
       - name: Rodar checagem de escalas
         if: steps.vpn.outcome == 'success'
         env:
