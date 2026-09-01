@@ -154,23 +154,6 @@ jobs:
           echo "    abra a etapa 'Rodar checagem de escalas' — o log completo, com"
           echo "    uma linha por AISP e por página, vai estar lá certinho."
 
-      # ⚠️ TESTE TEMPORÁRIO (28/08/2026) — só diagnóstico, sem função na
-      # checagem real. Descobre se a VPN bloqueia TUDO que não é da PMESP,
-      # ou só domínios específicos como o Telegram. Depois de rodar uma vez
-      # e ver o resultado, esse passo deve ser REMOVIDO.
-      - name: TESTE - Enviar mensagem de verdade pro Telegram com VPN ligada
-        if: steps.vpn.outcome == 'success'
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: |
-          echo "--- Tentando enviar uma mensagem de teste de verdade (POST) ---"
-          RESPOSTA=$(curl -s -m 10 -w "\nHTTP_CODE:%{http_code}" \
-            -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -H "Content-Type: application/json" \
-            -d "{\"chat_id\": \"${TELEGRAM_CHAT_ID}\", \"text\": \"🧪 Teste: mensagem enviada com a VPN da PMESP ainda ligada.\"}")
-          echo "$RESPOSTA" | sed "s/${TELEGRAM_BOT_TOKEN}/[TOKEN OCULTO]/g"
-
       - name: Rodar checagem de escalas
         if: steps.vpn.outcome == 'success'
         env:
@@ -178,6 +161,15 @@ jobs:
           PMESP_SENHA: ${{ secrets.PMESP_SENHA }}
           PMESP_AISP: ${{ vars.PMESP_AISP }}
           LOGIN_URL: ${{ vars.LOGIN_URL }}
+          # ⚠️ ADICIONADO 01/09/2026: o monitor.js agora manda as notificações
+          # DIRETO, assim que cada área termina (confirmado por teste real que
+          # o Telegram é alcançável mesmo com a VPN ligada) — por isso essa
+          # etapa também precisa das credenciais do Telegram, que antes só
+          # existiam na etapa separada "Enviar notificações no Telegram".
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_CHAT_ID_M5: ${{ secrets.TELEGRAM_CHAT_ID_M5 }}
+          TELEGRAM_CHAT_ID_M3: ${{ secrets.TELEGRAM_CHAT_ID_M3 }}
           NODE_ENV: production
           FORCE_COLOR: "0"
         continue-on-error: true
