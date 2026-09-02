@@ -43,21 +43,23 @@
 const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
+const { execFile } = require("child_process");
 
 // ─────────────────────────────────────────────────────────────────────────
-// ⚠️ ADICIONADO 01/09/2026 (a pedido do usuário): envio das notificações
-// DIRETO daqui, assim que cada área termina — em vez de esperar a checagem
-// inteira acabar (e a VPN desligar) pra só então avisar no Telegram.
+// ⚠️ ADICIONADO 01/09/2026, CORRIGIDO 02/09/2026 (a pedido do usuário): envio
+// das notificações DIRETO daqui, assim que cada área termina.
 //
-// Isso só foi possível porque um teste real confirmou que o Telegram É
-// alcançável mesmo com a VPN da PMESP ainda ligada (contrariando uma
-// suposição antiga documentada no notificar.js, que achava que dava
-// ETIMEDOUT). O teste mandou uma mensagem de verdade e ela chegou.
+// ⚠️ CORREÇÃO 02/09/2026 (bug real, investigado a fundo com 5 testes
+// diferentes): o fetch() do Node (e também o módulo https nativo — testamos
+// os dois) SEMPRE falhava com ETIMEDOUT tentando alcançar o Telegram com a
+// VPN ligada, mesmo o Node conseguindo alcançar OUTROS sites sem problema
+// (testamos com o GitHub, funcionou liso). Já o comando "curl" sempre
+// funcionou perfeitamente no mesmo ambiente, nos mesmos testes.
 //
-// Essas funções são cópias das que já existem no notificar.js (mesma lógica
-// de agrupar, formatar e enviar) — o notificar.js continua existindo como
-// rede de segurança pro final do run (cobre erro de VPN, e qualquer escala
-// que por algum motivo não tenha sido enviada aqui).
+// Não descobrimos o motivo exato dessa diferença (testamos IPv4 forçado, o
+// módulo https em vez do fetch — nenhum dos dois resolveu) — mas como o
+// curl comprovadamente funciona, a função de envio agora chama ele como um
+// processo externo, em vez de usar a rede do próprio Node diretamente.
 // ─────────────────────────────────────────────────────────────────────────
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID; // canal do M1 (padrão)
@@ -72,6 +74,28 @@ function canalParaModulo(modulo) {
 const PAUSA_ENTRE_ENVIOS_MS = 3300;
 function dormir(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
+// Chama o curl como um processo externo — usa execFile (não exec) com os
+// argumentos em array, pra NUNCA passar o texto da mensagem por dentro de
+// uma string de shell (evita por completo risco de injeção de comando,
+// mesmo que o texto da escala viesse com caracteres estranhos).
+function curlPost(url, jsonBody, timeoutMs) {
+    return new Promise(function (resolve) {
+        execFile("curl", [
+            "-s", "-m", String(Math.ceil(timeoutMs / 1000)),
+            "-w", "\n%{http_code}",
+            "-X", "POST", url,
+            "-H", "Content-Type: application/json",
+            "-d", jsonBody
+        ], { timeout: timeoutMs + 2000 }, function (erro, stdout) {
+            if (erro) { resolve({ erro: erro.message }); return; }
+            var partes = stdout.split("\n");
+            var codigoHttp = parseInt(partes.pop(), 10);
+            var corpo = partes.join("\n");
+            resolve({ codigoHttp: codigoHttp, corpo: corpo });
+        });
+    });
+}
+
 async function enviarTelegram(texto, chatIdDestino) {
     var destino = chatIdDestino || TELEGRAM_CHAT_ID;
     if (!TELEGRAM_BOT_TOKEN || !destino) {
@@ -79,29 +103,25 @@ async function enviarTelegram(texto, chatIdDestino) {
         return false;
     }
     var url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN + "/sendMessage";
+    var corpoJson = JSON.stringify({ chat_id: destino, text: texto, parse_mode: "HTML" });
     var MAX_TENTATIVAS = 5;
     for (var tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
-        var resp;
-        try {
-            resp = await fetch(url, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ chat_id: destino, text: texto, parse_mode: "HTML" })
-            });
-        } catch (e) {
-            console.warn("⚠️ Erro de rede tentando enviar Telegram em tempo real (tentativa " + tentativa + "/" + MAX_TENTATIVAS + "): " + e.message);
+        var resultado = await curlPost(url, corpoJson, 10000);
+        if (resultado.erro) {
+            console.warn("⚠️ Erro de rede (curl) tentando enviar Telegram em tempo real (tentativa " + tentativa + "/" + MAX_TENTATIVAS + "): " + resultado.erro);
             await dormir(2000);
             continue;
         }
-        var data = await resp.json().catch(() => ({}));
+        var data = {};
+        try { data = JSON.parse(resultado.corpo); } catch (e) { /* corpo vazio ou inválido — trata abaixo */ }
         if (data.ok) return true;
-        if (resp.status === 429 && data.parameters && data.parameters.retry_after) {
+        if (resultado.codigoHttp === 429 && data.parameters && data.parameters.retry_after) {
             var esperaMs = (data.parameters.retry_after + 1) * 1000;
             console.warn("⏳ Telegram pediu pra esperar " + data.parameters.retry_after + "s (tentativa " + tentativa + "/" + MAX_TENTATIVAS + ")...");
             await dormir(esperaMs);
             continue;
         }
-        console.error("❌ Falha ao enviar Telegram em tempo real:", JSON.stringify(data));
+        console.error("❌ Falha ao enviar Telegram em tempo real (via curl):", JSON.stringify(data || resultado));
         return false;
     }
     console.error("❌ Desisti de enviar essa mensagem em tempo real depois de " + MAX_TENTATIVAS + " tentativas.");
