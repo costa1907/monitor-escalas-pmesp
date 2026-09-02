@@ -159,31 +159,43 @@ jobs:
       # a causa da diferença entre o teste anterior (que funcionou com curl)
       # e o monitor.js de verdade (que usa fetch e vem falhando). Remover
       # depois de rodar uma vez.
-      - name: TESTE - fetch() do Node com VPN ligada (agora forçando IPv4)
+      - name: TESTE - descobrir a causa real do "fetch failed"
         if: steps.vpn.outcome == 'success'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          NODE_OPTIONS: "--dns-result-order=ipv4first"
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           node -e '
-          (async () => {
-            var tentativas = 3;
-            for (var i = 1; i <= tentativas; i++) {
-              console.log("--- Tentativa " + i + "/" + tentativas + " (fetch do Node) ---");
-              try {
-                var resp = await fetch("https://api.telegram.org/bot" + process.env.TELEGRAM_BOT_TOKEN + "/sendMessage", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text: "🧪 Teste 2: fetch() do Node (não curl), com a VPN ligada." })
-                });
-                var data = await resp.json();
-                console.log("Resultado:", JSON.stringify(data).replace(process.env.TELEGRAM_BOT_TOKEN, "[TOKEN OCULTO]"));
-                if (data.ok) { console.log("✅ FUNCIONOU"); break; }
-              } catch (e) {
-                console.log("❌ Erro:", e.message);
-              }
+          function detalharErro(e) {
+            console.log("mensagem:", e.message);
+            console.log("code:", e.code);
+            var causa = e.cause;
+            var nivel = 1;
+            while (causa) {
+              console.log("cause nível " + nivel + ":", JSON.stringify({
+                message: causa.message, code: causa.code, errno: causa.errno, syscall: causa.syscall
+              }));
+              causa = causa.cause;
+              nivel++;
             }
+          }
+          (async () => {
+            console.log("=== Teste 1: fetch pro Telegram ===");
+            try {
+              var resp = await fetch("https://api.telegram.org/bot" + process.env.TELEGRAM_BOT_TOKEN + "/sendMessage", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text: "teste" })
+              });
+              console.log("✅ FUNCIONOU, status:", resp.status);
+            } catch (e) { detalharErro(e); }
+
+            console.log("");
+            console.log("=== Teste 2: fetch pro GitHub (site diferente) ===");
+            try {
+              var resp2 = await fetch("https://api.github.com");
+              console.log("✅ FUNCIONOU, status:", resp2.status);
+            } catch (e) { detalharErro(e); }
           })();
           '
 
