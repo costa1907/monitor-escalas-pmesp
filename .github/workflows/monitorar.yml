@@ -159,43 +159,43 @@ jobs:
       # a causa da diferença entre o teste anterior (que funcionou com curl)
       # e o monitor.js de verdade (que usa fetch e vem falhando). Remover
       # depois de rodar uma vez.
-      - name: TESTE - descobrir a causa real do "fetch failed"
+      - name: TESTE - módulo https nativo do Node (em vez de fetch)
         if: steps.vpn.outcome == 'success'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           node -e '
-          function detalharErro(e) {
-            console.log("mensagem:", e.message);
-            console.log("code:", e.code);
-            var causa = e.cause;
-            var nivel = 1;
-            while (causa) {
-              console.log("cause nível " + nivel + ":", JSON.stringify({
-                message: causa.message, code: causa.code, errno: causa.errno, syscall: causa.syscall
-              }));
-              causa = causa.cause;
-              nivel++;
-            }
+          const https = require("https");
+          function enviarViaHttps(texto) {
+            return new Promise((resolve, reject) => {
+              var body = JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text: texto });
+              var req = https.request({
+                hostname: "api.telegram.org",
+                path: "/bot" + process.env.TELEGRAM_BOT_TOKEN + "/sendMessage",
+                method: "POST",
+                headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(body) },
+                timeout: 10000
+              }, (res) => {
+                var dados = "";
+                res.on("data", (d) => dados += d);
+                res.on("end", () => resolve({ status: res.statusCode, dados: dados }));
+              });
+              req.on("error", reject);
+              req.on("timeout", () => { req.destroy(); reject(new Error("timeout")); });
+              req.write(body);
+              req.end();
+            });
           }
           (async () => {
-            console.log("=== Teste 1: fetch pro Telegram ===");
+            console.log("=== Teste: módulo https nativo (não fetch) ===");
             try {
-              var resp = await fetch("https://api.telegram.org/bot" + process.env.TELEGRAM_BOT_TOKEN + "/sendMessage", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ chat_id: process.env.TELEGRAM_CHAT_ID, text: "teste" })
-              });
-              console.log("✅ FUNCIONOU, status:", resp.status);
-            } catch (e) { detalharErro(e); }
-
-            console.log("");
-            console.log("=== Teste 2: fetch pro GitHub (site diferente) ===");
-            try {
-              var resp2 = await fetch("https://api.github.com");
-              console.log("✅ FUNCIONOU, status:", resp2.status);
-            } catch (e) { detalharErro(e); }
+              var resultado = await enviarViaHttps("🧪 Teste 3: módulo https nativo do Node, com a VPN ligada.");
+              console.log("✅ FUNCIONOU, status:", resultado.status);
+              console.log("resposta:", resultado.dados.replace(process.env.TELEGRAM_BOT_TOKEN, "[TOKEN OCULTO]"));
+            } catch (e) {
+              console.log("❌ Erro:", e.message, e.code || "");
+            }
           })();
           '
 
