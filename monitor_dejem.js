@@ -43,18 +43,38 @@
 const { chromium } = require("playwright");
 const fs = require("fs");
 const path = require("path");
+const { execFile } = require("child_process");
 
 // ─────────────────────────────────────────────────────────────────────────
-// ⚠️ ADICIONADO 01/09/2026 (mesma correção da Delegada, a pedido do usuário
-// — ver monitor.js pra detalhes completos): envio das notificações DIRETO
-// daqui, assim que cada área termina. Confirmado por teste real que o
-// Telegram é alcançável mesmo com a VPN da PMESP ligada. Usa as credenciais
-// PRÓPRIAS do DEJEM (bot/canal separados da Delegada, como já era).
+// ⚠️ ADICIONADO 01/09/2026, CORRIGIDO 02/09/2026 (mesma correção da Delegada,
+// a pedido do usuário — ver monitor.js pra detalhes completos): o fetch() e
+// o módulo https do Node falhavam com ETIMEDOUT tentando alcançar o
+// Telegram, mesmo o Node conseguindo alcançar outros sites sem problema.
+// O curl sempre funcionou no mesmo ambiente — não descobrimos o motivo
+// exato da diferença, mas a função agora usa ele.
 // ─────────────────────────────────────────────────────────────────────────
 const TELEGRAM_BOT_TOKEN_TEMPO_REAL = process.env.TELEGRAM_BOT_TOKEN_DEJEM;
 const TELEGRAM_CHAT_ID_TEMPO_REAL = process.env.TELEGRAM_CHAT_ID_DEJEM;
 const PAUSA_ENTRE_ENVIOS_MS = 3300;
 function dormir(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+function curlPost(url, jsonBody, timeoutMs) {
+    return new Promise(function (resolve) {
+        execFile("curl", [
+            "-s", "-m", String(Math.ceil(timeoutMs / 1000)),
+            "-w", "\n%{http_code}",
+            "-X", "POST", url,
+            "-H", "Content-Type: application/json",
+            "-d", jsonBody
+        ], { timeout: timeoutMs + 2000 }, function (erro, stdout) {
+            if (erro) { resolve({ erro: erro.message }); return; }
+            var partes = stdout.split("\n");
+            var codigoHttp = parseInt(partes.pop(), 10);
+            var corpo = partes.join("\n");
+            resolve({ codigoHttp: codigoHttp, corpo: corpo });
+        });
+    });
+}
 
 async function enviarTelegram(texto) {
     if (!TELEGRAM_BOT_TOKEN_TEMPO_REAL || !TELEGRAM_CHAT_ID_TEMPO_REAL) {
@@ -62,29 +82,25 @@ async function enviarTelegram(texto) {
         return false;
     }
     var url = "https://api.telegram.org/bot" + TELEGRAM_BOT_TOKEN_TEMPO_REAL + "/sendMessage";
+    var corpoJson = JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_TEMPO_REAL, text: texto, parse_mode: "HTML" });
     var MAX_TENTATIVAS = 5;
     for (var tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
-        var resp;
-        try {
-            resp = await fetch(url, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ chat_id: TELEGRAM_CHAT_ID_TEMPO_REAL, text: texto, parse_mode: "HTML" })
-            });
-        } catch (e) {
-            console.warn("⚠️ Erro de rede tentando enviar Telegram em tempo real (tentativa " + tentativa + "/" + MAX_TENTATIVAS + "): " + e.message);
+        var resultado = await curlPost(url, corpoJson, 10000);
+        if (resultado.erro) {
+            console.warn("⚠️ Erro de rede (curl) tentando enviar Telegram em tempo real (tentativa " + tentativa + "/" + MAX_TENTATIVAS + "): " + resultado.erro);
             await dormir(2000);
             continue;
         }
-        var data = await resp.json().catch(() => ({}));
+        var data = {};
+        try { data = JSON.parse(resultado.corpo); } catch (e) { /* corpo vazio ou inválido — trata abaixo */ }
         if (data.ok) return true;
-        if (resp.status === 429 && data.parameters && data.parameters.retry_after) {
+        if (resultado.codigoHttp === 429 && data.parameters && data.parameters.retry_after) {
             var esperaMs = (data.parameters.retry_after + 1) * 1000;
             console.warn("⏳ Telegram pediu pra esperar " + data.parameters.retry_after + "s (tentativa " + tentativa + "/" + MAX_TENTATIVAS + ")...");
             await dormir(esperaMs);
             continue;
         }
-        console.error("❌ Falha ao enviar Telegram em tempo real:", JSON.stringify(data));
+        console.error("❌ Falha ao enviar Telegram em tempo real (via curl):", JSON.stringify(data || resultado));
         return false;
     }
     console.error("❌ Desisti de enviar essa mensagem em tempo real depois de " + MAX_TENTATIVAS + " tentativas.");
