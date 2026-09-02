@@ -159,10 +159,11 @@ jobs:
       # a causa da diferença entre o teste anterior (que funcionou com curl)
       # e o monitor.js de verdade (que usa fetch e vem falhando). Remover
       # depois de rodar uma vez.
-      - name: TESTE - fetch() do Node com VPN ligada
+      - name: TESTE - fetch() do Node com VPN ligada (agora forçando IPv4)
         if: steps.vpn.outcome == 'success'
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          NODE_OPTIONS: "--dns-result-order=ipv4first"
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           node -e '
