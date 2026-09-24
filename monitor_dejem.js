@@ -203,6 +203,7 @@ const RESULTADO_PATH = path.join(__dirname, "resultado_dejem.json");
 // As 14 estações do DEJEM (MODOS_ROBO.DEJEM.areas do robô Tampermonkey do
 // usuário, confirmadas direto no dropdown real da tela em 15/08/2026).
 const TODAS_AREAS_DELEGADA = [
+    // CPA/M-1
     { nome: "Estação Armênia", aisp: "84760" },
     { nome: "Estação Luz", aisp: "84761" },
     { nome: "Estação São Bento", aisp: "84762" },
@@ -216,7 +217,20 @@ const TODAS_AREAS_DELEGADA = [
     { nome: "Estação Belém", aisp: "84776" },
     { nome: "Estação Trianon MASP", aisp: "84787" },
     { nome: "Estação Liberdade", aisp: "85430" },
-    { nome: "Estação Paraíso", aisp: "85431" }
+    { nome: "Estação Paraíso", aisp: "85431" },
+    // CPA/M-3
+    { nome: "Estação Tucuruvi", aisp: "84756" },
+    { nome: "Estação Santana", aisp: "84757" },
+    { nome: "Estação Carandiru", aisp: "84758" },
+    { nome: "Estação Portuguesa Tietê", aisp: "84759" },
+    // CPA/M-5
+    { nome: "Estação Barra Funda", aisp: "84767" },
+    // CPA/M-11
+    { nome: "Estação Tatuapé", aisp: "84777" },
+    { nome: "Estação Carrão", aisp: "84778" },
+    { nome: "Estação Penha", aisp: "84779" },
+    { nome: "Estação Guilhermina Esperança", aisp: "84781" },
+    { nome: "Estação Vila Prudente", aisp: "84791" }
 ];
 function _nomeDaAisp(aisp) {
     var a = TODAS_AREAS_DELEGADA.find(function (x) { return x.aisp === aisp; });
