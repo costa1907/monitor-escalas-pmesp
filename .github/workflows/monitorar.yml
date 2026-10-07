@@ -1,28 +1,12 @@
 name: Monitorar Escalas PMESP
 
 on:
-  # CORREÇÃO 01/08/2026 (a pedido do usuário): removido o gatilho "schedule"
-  # (agendamento interno do GitHub). Ele se mostrou pouco confiável na prática
-  # — chegou a ficar ~12h seguidas sem disparar nenhuma vez, mesmo configurado
-  # pra rodar a cada 30min (comportamento "melhor esforço" documentado do
-  # próprio GitHub, mais comum em repositórios com pouco tráfego). Pra
-  # contornar isso, foi configurado um serviço externo (cron-job.org) que chama
-  # o mesmo workflow via workflow_dispatch a cada 30min de fora do GitHub, de
-  # forma bem mais pontual. Manter os dois gatilhos ativos ao mesmo tempo
-  # arriscava disparos quase simultâneos (o "schedule" acordando por conta
-  # própria bem perto de um disparo do cron-job.org) — dois logins seguidos e
-  # rápidos no sistema da PMESP pareciam estar deixando o servidor deles
-  # instável, causando falha em cascata nas áreas seguintes de uma checagem.
-  # Removendo o "schedule", só sobra o workflow_dispatch (usado tanto pelo
-  # cron-job.org quanto pelo botão manual "Run workflow"), sem risco de
-  # sobreposição.
-  workflow_dispatch: {} # permite rodar manualmente pelo botão "Run workflow" no GitHub, e é o que o cron-job.org chama por fora
+  # Só workflow_dispatch: o cron-job.org chama este workflow a cada 30min,
+  # e também dá pra rodar manualmente pelo botão "Run workflow".
+  workflow_dispatch: {}
 
-# Necessário pra o workflow poder commitar o arquivo de "já avisados" de volta no repositório
 permissions:
   contents: write
-  # Necessário pra esse workflow poder disparar o do DEJEM automaticamente
-  # ao terminar (ver último passo, "Disparar checagem do DEJEM").
   actions: write
 
 concurrency:
@@ -32,32 +16,26 @@ concurrency:
 jobs:
   checar:
     runs-on: ubuntu-latest
-    # Aumentado de 29 pra 40: desde a correção de 31/07/2026, cada AISP faz login
-    # do zero (mais confiável, mas ~15-20s mais lento por área) — 40min dá folga
-    # de sobra mesmo assim, já que o próprio monitor.js agora se auto-limita a
-    # ~22min de checagem e para sozinho de forma limpa antes de chegar perto do
-    # limite do job (ver ORCAMENTO_MAX_MINUTOS em monitor.js).
     timeout-minutes: 40
     steps:
-      # CORREÇÃO 02/08/2026: actions (checkout/setup-node/upload-artifact) e o
-      # Node do próprio script atualizados de v4/Node 20 pra v7/Node 24 — o
-      # GitHub estava avisando que Node 20 seria descontinuado nas actions.
-      # Sem mudança de comportamento esperada (o código só usa JS padrão, que
-      # já funciona desde o Node 18).
       - name: Baixar código do repositório
         uses: actions/checkout@v7
 
-      # ⚠️ CORREÇÃO 18/08/2026 (bug real, visto em log): o GitHub configura os
-      # próprios servidores pra tentar primeiro um espelho de pacotes da Azure
-      # (azure.archive.ubuntu.com). Quando esse espelho está instável, o apt
-      # fica tentando e falhando repetidamente antes de desistir e cair pro
-      # espelho padrão — isso já consumiu os 40min inteiros do job numa
-      # execução real, cancelando tudo sem nem chegar a rodar a checagem.
-      # Pulando direto pro espelho padrão mundial, evita essa trava por
-      # completo (custo: alguns segundos a mais nos dias em que o espelho da
-      # Azure estava funcionando bem — imperceptível no tempo total do robô).
-      - name: Evitar espelho instável do Azure para pacotes do Ubuntu
-        run: echo "http://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt
+      # CORREÇÃO 07/10/2026: em vez de fixar um único espelho (que quando cai
+      # trava o apt por ~15min), testa qual responde e limita o tempo de espera.
+      - name: Escolher espelho do apt que esteja respondendo
+        run: |
+          echo 'Acquire::http::Timeout "10"; Acquire::Retries "2";' | sudo tee /etc/apt/apt.conf.d/99rapido
+          COD=$(lsb_release -cs)
+          for m in "http://archive.ubuntu.com/ubuntu" "http://azure.archive.ubuntu.com/ubuntu"; do
+            if curl -fsS -m 8 -o /dev/null "$m/dists/$COD/InRelease"; then
+              echo "✅ Usando $m"
+              echo "$m" | sudo tee /etc/apt/apt-mirrors.txt
+              exit 0
+            fi
+            echo "⚠️ $m não respondeu"
+          done
+          echo "Nenhum respondeu, mantendo o padrão do runner"
 
       - name: Configurar Node.js
         uses: actions/setup-node@v7
@@ -67,11 +45,20 @@ jobs:
       - name: Instalar dependências
         run: npm install
 
+      # CORREÇÃO 07/10/2026: sem --with-deps. As libs do Chromium já vêm no
+      # runner; só faltavam fontes, que não são necessárias pro scraping.
       - name: Instalar navegador (Chromium) do Playwright
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
 
+      # CORREÇÃO 07/10/2026: retry, já que o openconnect é o único apt necessário.
       - name: Instalar cliente VPN (openconnect, compatível com Cisco AnyConnect)
-        run: sudo apt-get update -y && sudo apt-get install -y openconnect
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update -y && sudo apt-get install -y openconnect && exit 0
+            echo "Tentativa $i falhou, aguardando..."
+            sleep 15
+          done
+          exit 1
 
       - name: Conectar na VPN da PMESP
         timeout-minutes: 3
@@ -81,16 +68,8 @@ jobs:
           PMESP_VPN_USUARIO: ${{ secrets.PMESP_VPN_USUARIO }}
           PMESP_VPN_SENHA: ${{ secrets.PMESP_VPN_SENHA }}
         run: |
-          # IMPORTANTE: várias tentativas anteriores (redirecionar saída + "&" +
-          # "disown", depois "setsid") ainda prendiam o passo por causa de como o
-          # "sudo" usa PTY por baixo dos panos no Ubuntu. Resolvido usando a flag
-          # OFICIAL do próprio sudo pra rodar em segundo plano ("-b"), que já cuida
-          # de tudo isso direito, sem precisar empilhar truques por cima.
-          #
-          # O arquivo de senha precisa poder ser LIDO pelo próprio shell do runner
-          # (usuário comum) — é ele quem abre o arquivo ANTES de virar sudo, não o
-          # processo do openconnect em si. Por isso não usamos sudo pra criar esse
-          # arquivo (senão só o root conseguiria lê-lo).
+          # "sudo -b" roda em segundo plano sem prender o passo.
+          # O arquivo de senha é criado sem sudo pra o shell comum conseguir lê-lo.
           echo "$PMESP_VPN_SENHA" > /tmp/vpnpass
           chmod 600 /tmp/vpnpass
 
@@ -124,9 +103,6 @@ jobs:
           fi
           sudo cat /tmp/openconnect.pid
 
-          # O processo da VPN pode subir antes da rede/DNS interno realmente
-          # ficarem prontos pra uso — em vez de confiar numa espera fixa, fica
-          # tentando resolver o nome do site até funcionar de verdade (até ~60s).
           echo "Aguardando o DNS interno da PMESP responder..."
           ok=""
           for i in $(seq 1 20); do
@@ -144,15 +120,9 @@ jobs:
 
           echo ""
           echo "✅ VPN conectada com sucesso — essa etapa já terminou de verdade."
-          echo "ℹ️  Se ela continuar parecendo 'presa' aqui na tela (bolinha girando sem"
-          echo "    fim), é só um comportamento visual do GitHub — o processo da VPN"
-          echo "    continua rodando em segundo plano de propósito até o fim do job,"
-          echo "    e por causa disso o navegador às vezes não atualiza o ícone dessa"
-          echo "    etapa pra 'concluído' nem libera o log ao vivo da próxima etapa."
-          echo "    NÃO CANCELE o workflow por causa disso — ele já está avançando."
-          echo "    Pra acompanhar: espere o job terminar (ou dê F5/reabra a aba) e"
-          echo "    abra a etapa 'Rodar checagem de escalas' — o log completo, com"
-          echo "    uma linha por AISP e por página, vai estar lá certinho."
+          echo "ℹ️  Se ela continuar parecendo 'presa' na tela, é só comportamento visual"
+          echo "    do GitHub (a VPN segue em segundo plano de propósito)."
+          echo "    NÃO CANCELE o workflow. Veja o log completo na etapa 'Rodar checagem de escalas'."
 
       - name: Rodar checagem de escalas
         if: steps.vpn.outcome == 'success'
@@ -161,11 +131,6 @@ jobs:
           PMESP_SENHA: ${{ secrets.PMESP_SENHA }}
           PMESP_AISP: ${{ vars.PMESP_AISP }}
           LOGIN_URL: ${{ vars.LOGIN_URL }}
-          # ⚠️ ADICIONADO 01/09/2026: o monitor.js agora manda as notificações
-          # DIRETO, assim que cada área termina (confirmado por teste real que
-          # o Telegram é alcançável mesmo com a VPN ligada) — por isso essa
-          # etapa também precisa das credenciais do Telegram, que antes só
-          # existiam na etapa separada "Enviar notificações no Telegram".
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_CHAT_ID_M5: ${{ secrets.TELEGRAM_CHAT_ID_M5 }}
@@ -180,13 +145,6 @@ jobs:
         if: steps.vpn.outcome == 'failure'
         run: |
           echo '{"erro":"A VPN não conseguiu conectar (ou o DNS interno não respondeu a tempo). Provavelmente instabilidade temporária do servidor VPN da PMESP.","novos":[],"resultadoPorArea":[]}' > resultado.json
-
-      # ⚠️ CORREÇÃO 20/08/2026 (a pedido do usuário): removido o passo de
-      # upload de screenshots de erro. A funcionalidade em si já tinha sido
-      # limitada antes (ver monitor.js), mas mesmo assim essa etapa de
-      # UPLOAD travou "Em execução..." por mais de 20 minutos num run real,
-      # fazendo o job inteiro (que devia levar ~23min) ser cancelado só
-      # depois de 45 minutos. Como não é mais necessária, foi removida.
 
       - name: Desconectar da VPN
         if: always()
@@ -205,15 +163,6 @@ jobs:
           TELEGRAM_CHAT_ID_M3: ${{ secrets.TELEGRAM_CHAT_ID_M3 }}
           MODULO_LABEL: ${{ vars.MODULO_LABEL }}
         run: stdbuf -oL -eL node notificar.js
-
-      # ⚠️ CORREÇÃO 20/08/2026 (a pedido do usuário): removido o passo do bot
-      # apagador de resumo duplicado (dedupe_resumo.js). Desde que o resumo
-      # de fim de checagem ("🔎 Checagem concluída!") foi removido do
-      # notificar.js — só ficaram os avisos de escala nova —, esse bot não
-      # tem mais nenhum resumo pra encontrar/apagar; ele só rodava à toa,
-      # sem fazer nada útil. O arquivo dedupe_resumo.js pode continuar no
-      # repositório sem problema (só não é mais chamado por aqui), caso o
-      # resumo volte a existir no futuro.
 
       - name: Marcar job como falho (se algo deu errado)
         if: steps.vpn.outcome == 'failure' || steps.checagem.outcome == 'failure'
