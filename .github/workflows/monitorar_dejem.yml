@@ -1,17 +1,11 @@
 name: Monitorar DEJEM PMESP
 
-# ⚠️ VERSÃO DEJEM (15/08/2026): clone do monitorar.yml da Atividade Delegada,
-# rodando em paralelo como um workflow TOTALMENTE separado (grupo de
-# concorrência próprio) — assim um não espera o outro terminar.
+# Clone do monitorar.yml da Atividade Delegada, rodando como workflow
+# totalmente separado (grupo de concorrência próprio).
 #
-# ATENÇÃO — RISCO AINDA NÃO TESTADO: o usuário confirmou que o SITE aceita
-# duas sessões de LOGIN simultâneas com a mesma conta (testou abrindo duas
-# abas). Isso NÃO é a mesma coisa que confirmar se o servidor de VPN aceita
-# dois TÚNEIS simultâneos com o mesmo usuário de VPN — são sistemas
-# diferentes (gateway de VPN vs. aplicação web por trás dele). Se o gateway
-# de VPN só permitir uma conexão por vez, esses dois workflows rodando ao
-# mesmo tempo podem brigar entre si na etapa de conectar a VPN. Só o teste
-# real (rodando os dois de propósito ao mesmo tempo) vai confirmar.
+# RISCO AINDA NÃO TESTADO: o site aceita duas sessões de login simultâneas,
+# mas isso não garante que o gateway de VPN aceite dois túneis simultâneos
+# com o mesmo usuário. Só o teste real vai confirmar.
 on:
   workflow_dispatch: {}
 
@@ -30,10 +24,21 @@ jobs:
       - name: Baixar código do repositório
         uses: actions/checkout@v7
 
-      # Mesma correção aplicada no workflow da Delegada — ver comentário lá
-      # (monitorar.yml) pra detalhes completos.
-      - name: Evitar espelho instável do Azure para pacotes do Ubuntu
-        run: echo "http://archive.ubuntu.com/ubuntu" | sudo tee /etc/apt/apt-mirrors.txt
+      # CORREÇÃO 07/10/2026: em vez de fixar um único espelho (que quando cai
+      # trava o apt por ~15min), testa qual responde e limita o tempo de espera.
+      - name: Escolher espelho do apt que esteja respondendo
+        run: |
+          echo 'Acquire::http::Timeout "10"; Acquire::Retries "2";' | sudo tee /etc/apt/apt.conf.d/99rapido
+          COD=$(lsb_release -cs)
+          for m in "http://archive.ubuntu.com/ubuntu" "http://azure.archive.ubuntu.com/ubuntu"; do
+            if curl -fsS -m 8 -o /dev/null "$m/dists/$COD/InRelease"; then
+              echo "✅ Usando $m"
+              echo "$m" | sudo tee /etc/apt/apt-mirrors.txt
+              exit 0
+            fi
+            echo "⚠️ $m não respondeu"
+          done
+          echo "Nenhum respondeu, mantendo o padrão do runner"
 
       - name: Configurar Node.js
         uses: actions/setup-node@v7
@@ -43,11 +48,20 @@ jobs:
       - name: Instalar dependências
         run: npm install
 
+      # CORREÇÃO 07/10/2026: sem --with-deps. As libs do Chromium já vêm no
+      # runner; só faltavam fontes, que não são necessárias pro scraping.
       - name: Instalar navegador (Chromium) do Playwright
-        run: npx playwright install --with-deps chromium
+        run: npx playwright install chromium
 
+      # CORREÇÃO 07/10/2026: retry, já que o openconnect é o único apt necessário.
       - name: Instalar cliente VPN (openconnect, compatível com Cisco AnyConnect)
-        run: sudo apt-get update -y && sudo apt-get install -y openconnect
+        run: |
+          for i in 1 2 3; do
+            sudo apt-get update -y && sudo apt-get install -y openconnect && exit 0
+            echo "Tentativa $i falhou, aguardando..."
+            sleep 15
+          done
+          exit 1
 
       - name: Conectar na VPN da PMESP
         timeout-minutes: 3
@@ -118,9 +132,6 @@ jobs:
           PMESP_AISP: ${{ vars.PMESP_AISP_DEJEM }}
           LOGIN_URL: ${{ vars.LOGIN_URL }}
           URL_TELA_ESCALAS_DEJEM: ${{ vars.URL_TELA_ESCALAS_DEJEM }}
-          # ⚠️ ADICIONADO 01/09/2026: o monitor_dejem.js agora manda as
-          # notificações direto, assim que cada área termina — ver
-          # monitorar.yml (Delegada) pra detalhes completos.
           TELEGRAM_BOT_TOKEN_DEJEM: ${{ secrets.TELEGRAM_BOT_TOKEN_DEJEM }}
           TELEGRAM_CHAT_ID_DEJEM: ${{ secrets.TELEGRAM_CHAT_ID_DEJEM }}
           NODE_ENV: production
@@ -133,9 +144,6 @@ jobs:
         if: steps.vpn.outcome == 'failure'
         run: |
           echo '{"erro":"A VPN não conseguiu conectar (ou o DNS interno não respondeu a tempo). Provavelmente instabilidade temporária do servidor VPN da PMESP.","novos":[],"resultadoPorArea":[]}' > resultado_dejem.json
-
-      # Mesma correção aplicada no workflow da Delegada — ver comentário lá
-      # (monitorar.yml) pra detalhes completos.
 
       - name: Desconectar da VPN
         if: always()
